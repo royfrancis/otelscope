@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { buildDatasets, buildSource, defaultLogDir, describeDatasets, listSources, writeDatasets } from '../scripts/prepare-data.mjs'
 import { MAX_DISTINCT, readPoints } from '../scripts/data/metrics.mjs'
+import { withFakeLogger, writeFolder } from './fakeLogger.js'
 
 // ---- builders for the records the logger stores (shown here as the JSON lines `cat` prints) --------
 const str = (v) => ({ stringValue: v })
@@ -43,16 +44,11 @@ const span = (name, a = {}, { t = 1000, seconds = 0.5, traceId, spanId } = {}) =
 const spansLine = (spans, res = resource()) =>
   JSON.stringify({ received_at: 'x', data: { resourceSpans: [{ resource: res, scopeSpans: [{ spans }] }] } }) + '\n'
 
-/** A folder holding the given files (name -> text), removed afterward. */
-async function inFolder(files, run) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'otel-fixture-'))
-  try {
-    for (const [name, text] of Object.entries(files)) writeFileSync(path.join(dir, name), text)
-    return await run(dir)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
+/** A folder holding the given log files (name.pblog -> the JSON lines `cat` prints for it), read through the fake `cat`; removed afterward. */
+const inFolder = (files, run) => withFakeLogger(async (dir) => {
+  writeFolder(dir, files)
+  return run(dir)
+})
 const total = (measure) => measure.rows.reduce((a, r) => a + r[1], 0)
 const measureOf = (usage, key) => usage.measures.find((m) => m.key === key)
 const byField = (usage, key, field) => {
@@ -65,7 +61,7 @@ const byField = (usage, key, field) => {
 // ---- a tool that sends delta counters: every metric is a measure, every attribute a field ---------
 const common = { 'app.entrypoint': 'cli', 'vcs.repository.name': 'demo', 'terminal.type': 'vscode' }
 const deltaFolder = {
-  'metrics.jsonl': [
+  'metrics.pblog': [
     metricsLine([
       sum('claude_code.token.usage', [
         { t: 1000, value: 100, type: 'input', 'session.id': 's1', model: 'claude-opus-5-5', ...common },
@@ -76,9 +72,9 @@ const deltaFolder = {
       sum('claude_code.lines_of_code.count', [{ t: 1500, value: 12, type: 'added', 'session.id': 's1', ...common }]),
       sum('claude_code.session.count', [{ t: 1000, value: 1, 'session.id': 's1', ...common }]),
     ]),
-    '{"received_at":"x","data":{"resourceMet', // half-written last line while the logger appends
+    '{"received_at":"x","data":{"resourceMet', // a line that is not a whole record: the reader skips it
   ].join(''),
-  'logs.jsonl': [
+  'logs.pblog': [
     logLine([event(1100, 'user_prompt', { 'session.id': 's1', prompt: '  First   prompt\n with   whitespace  ', prompt_length: 30 }), event(1100, 'api_request', { 'session.id': 's1', model: 'm' })]),
     logLine([event(900, 'user_prompt', { 'session.id': 's1', prompt: 'Earlier prompt' })]),
     'not json at all\n',
@@ -131,21 +127,21 @@ test('sessions are found from the session field, with what the search box needs 
 })
 
 test('a tool with no session attribute has no sessions, and a tool with no dollar measure no session costs', async () => {
-  await inFolder({ 'metrics.jsonl': metricsLine([sum('widgets.made', [{ t: 100, value: 3, color: 'red' }, { t: 200, value: 2, color: 'blue' }])], resource({})) }, async (dir) => {
+  await inFolder({ 'metrics.pblog': metricsLine([sum('widgets.made', [{ t: 100, value: 3, color: 'red' }, { t: 200, value: 2, color: 'blue' }])], resource({})) }, async (dir) => {
     const { usage } = await buildSource(dir)
     assert.equal(usage.sessionField, null)
     assert.deepEqual(usage.sessions, [])
     assert.equal(usage.modelField, null)
     assert.deepEqual(usage.fields, ['color'])
   })
-  await inFolder({ 'metrics.jsonl': metricsLine([sum('a.b', [{ t: 1, value: 1, 'session.id': 'x' }])]) }, async (dir) => {
+  await inFolder({ 'metrics.pblog': metricsLine([sum('a.b', [{ t: 1, value: 1, 'session.id': 'x' }])]) }, async (dir) => {
     const { usage } = await buildSource(dir)
     assert.equal('cost' in usage.sessions[0], false)
   })
 })
 
 test('the session and the model are found under the names other tools use', async () => {
-  const folder = (extra) => ({ 'metrics.jsonl': metricsLine([sum('x.count', [{ t: 1, value: 1, ...extra }])], resource({})) })
+  const folder = (extra) => ({ 'metrics.pblog': metricsLine([sum('x.count', [{ t: 1, value: 1, ...extra }])], resource({})) })
   await inFolder(folder({ 'gen_ai.conversation.id': 'c1', 'gen_ai.request.model': 'gpt-a' }), async (dir) => {
     const { usage } = await buildSource(dir)
     assert.equal(usage.sessionField, 'gen_ai.conversation.id')
@@ -158,7 +154,7 @@ test('the session and the model are found under the names other tools use', asyn
 
 test('a field with more than a few hundred different values is left out, but the session field is kept however many', async () => {
   const points = Array.from({ length: MAX_DISTINCT + 20 }, (_, i) => ({ t: 1000 + i, value: 1, 'session.id': `s${i}`, request: `r${i}`, kind: i % 2 ? 'a' : 'b' }))
-  await inFolder({ 'metrics.jsonl': metricsLine([sum('x.count', points)], resource({})) }, async (dir) => {
+  await inFolder({ 'metrics.pblog': metricsLine([sum('x.count', points)], resource({})) }, async (dir) => {
     const { usage } = await buildSource(dir)
     assert.deepEqual(usage.fields.slice().sort(), ['kind', 'session.id']) // no use coloring by something unique to every point
     assert.equal(usage.sessions.length, MAX_DISTINCT + 20)
@@ -167,7 +163,7 @@ test('a field with more than a few hundred different values is left out, but the
 
 // ---- cumulative counters --------------------------------------------------------------------------
 const cumulative = (points, options) => metricsLine([sum('x.tokens', points, { temporality: 2, ...options })], resource({}))
-const points = async (lines) => inFolder({ 'metrics.jsonl': lines }, readPoints)
+const points = async (lines) => inFolder({ 'metrics.pblog': lines }, readPoints)
 const increases = (pts) => pts.map((p) => [p.t, p.value])
 
 test('a cumulative counter is turned into the increase since its last sample, not added up', async () => {
@@ -217,6 +213,20 @@ test('what cannot be added up is left out: gauges, summaries, and a cumulative s
   assert.deepEqual(pts.map((p) => p.key), ['x.fine'])
 })
 
+test('a sum with no isMonotonic is not monotonic: protobuf leaves a false out of the record', async () => {
+  const unflagged = (name, options) => {
+    const metric = sum(name, [{ t: 1, value: 4, start: 0 }], options)
+    delete metric.sum.isMonotonic
+    return metric
+  }
+  const pts = await points(metricsLine([
+    unflagged('x.queue.depth', { temporality: 2 }), // cumulative and able to go down: a level, not an amount
+    unflagged('x.delta', { temporality: 1 }), // delta: every sample is a change, so it still counts
+    sum('x.fine', [{ t: 1, value: 4, start: 0 }], { temporality: 2 }), // flagged monotonic
+  ], resource({})))
+  assert.deepEqual(pts.map((p) => p.key).sort(), ['x.delta', 'x.fine'])
+})
+
 test('a delta sum that can go down is still added up, since each sample is a change', async () => {
   const pts = await points(metricsLine([sum('x.delta', [{ t: 1, value: -3 }, { t: 2, value: 5 }], { monotonic: false })], resource({})))
   assert.equal(pts.reduce((a, p) => a + p.value, 0), 2)
@@ -235,7 +245,7 @@ test('a histogram gives its sum and its count, delta or cumulative', async () =>
 })
 
 test('a histogram becomes two measures, the second one called a count, and a duration is shown as one', async () => {
-  await inFolder({ 'metrics.jsonl': metricsLine([histogram('app.request.duration', [{ t: 100, count: 2, total: 3.5 }], { unit: 's' }), sum('app.tokens', [{ t: 100, value: 1 }])], resource({})) }, async (dir) => {
+  await inFolder({ 'metrics.pblog': metricsLine([histogram('app.request.duration', [{ t: 100, count: 2, total: 3.5 }], { unit: 's' }), sum('app.tokens', [{ t: 100, value: 1 }])], resource({})) }, async (dir) => {
     const { usage } = await buildSource(dir)
     assert.deepEqual(usage.measures.map((m) => [m.label, m.format]).sort(), [
       ['Request duration (count)', 'number'], ['Request duration (seconds)', 'seconds'], ['Tokens', 'number'], // "app." is on every name, so it is dropped
@@ -248,7 +258,7 @@ test('measures are listed by how much data they have, and acronyms are capitals'
     sum('gen_ai.client.token.usage', [{ t: 1, value: 1 }, { t: 2, value: 1 }, { t: 3, value: 1 }]),
     sum('copilot_chat.session.count', [{ t: 1, value: 1 }]),
   ], resource({}))
-  await inFolder({ 'metrics.jsonl': lines }, async (dir) => {
+  await inFolder({ 'metrics.pblog': lines }, async (dir) => {
     const { usage } = await buildSource(dir)
     assert.deepEqual(usage.measures.map((m) => m.label), ['Gen AI client token usage', 'Copilot chat session count']) // no prefix is shared, so none is dropped
   })
@@ -257,8 +267,8 @@ test('measures are listed by how much data they have, and acronyms are capitals'
 // ---- the Logs: log events and spans, one kind per file ---------------------------------------------
 test('log events and spans are grouped by name, each group its own file, newest first', async () => {
   const files = {
-    'logs.jsonl': logLine([event(100, 'tool.call', { name: 'a' }), event(300, 'tool.call', { name: 'b' }), event(200, 'user.prompt', { prompt: 'hi' })]),
-    'traces.jsonl': spansLine([span('chat gpt', { 'gen_ai.usage.input_tokens': 5 }, { t: 400, seconds: 2, traceId: 'aa', spanId: '01' })]),
+    'logs.pblog': logLine([event(100, 'tool.call', { name: 'a' }), event(300, 'tool.call', { name: 'b' }), event(200, 'user.prompt', { prompt: 'hi' })]),
+    'traces.pblog': spansLine([span('chat gpt', { 'gen_ai.usage.input_tokens': 5 }, { t: 400, seconds: 2, traceId: 'aa', spanId: '01' })]),
   }
   await inFolder(files, async (dir) => {
     const { logs } = await buildSource(dir)
@@ -275,7 +285,7 @@ test('log events and spans are grouped by name, each group its own file, newest 
 })
 
 test('the id of a kind is the same on every run, and different for a log event and a span of the same name', async () => {
-  const files = { 'logs.jsonl': logLine([event(1, 'same')]), 'traces.jsonl': spansLine([span('same')]) }
+  const files = { 'logs.pblog': logLine([event(1, 'same')]), 'traces.pblog': spansLine([span('same')]) }
   const ids = async () => inFolder(files, async (dir) => (await buildSource(dir)).logs.index.events.map((e) => e.id))
   const first = await ids()
   assert.deepEqual(await ids(), first)
@@ -289,7 +299,7 @@ test('a log record with no event name is named by its body, and keeps a differen
     { timeUnixNano: nano(20), body: str('some body'), attributes: attrs({ 'event.name': 'named' }) },
     { timeUnixNano: nano(30) },
   ]
-  await inFolder({ 'logs.jsonl': logLine(records) }, async (dir) => {
+  await inFolder({ 'logs.pblog': logLine(records) }, async (dir) => {
     const { logs } = await buildSource(dir)
     assert.deepEqual(logs.index.events.map((e) => e.name).sort(), ['(log record)', 'named', 'plain message'])
     const rows = Object.fromEntries(logs.files.map((f) => [f.data.name, f.data.rows[0]]))
@@ -299,10 +309,26 @@ test('a log record with no event name is named by its body, and keeps a differen
   })
 })
 
+test('a log record is named by its eventName field first, and a body of any kind is kept', async () => {
+  const records = [
+    { timeUnixNano: nano(10), eventName: 'by.field', body: str('the message'), attributes: attrs({ 'event.name': 'by.attribute' }) },
+    { timeUnixNano: nano(20), body: { kvlistValue: { values: [{ key: 'k', value: str('v') }, { key: 'n', value: { intValue: 3 } }] } } },
+    { timeUnixNano: nano(30), body: { intValue: 7 } },
+    { timeUnixNano: nano(40), eventName: 'by.field', body: { arrayValue: { values: [str('a')] } } },
+  ]
+  await inFolder({ 'logs.pblog': logLine(records) }, async (dir) => {
+    const { logs } = await buildSource(dir)
+    assert.deepEqual(logs.index.events.map((e) => e.name).sort(), ['(log record)', 'by.field']) // not 'by.attribute', and not the message
+    const rowsOf = (name) => logs.files.find((f) => f.data.name === name).data.rows
+    assert.deepEqual(rowsOf('by.field').map((r) => r.body), ['["a"]', 'the message']) // newest first
+    assert.deepEqual(rowsOf('(log record)').map((r) => r.body), [7, '{"k":"v","n":3}']) // a structured body is not lost
+  })
+})
+
 test('a span exported twice is one span; very long text is cut', async () => {
   const long = 'x'.repeat(20_000)
   const files = {
-    'traces.jsonl': spansLine([span('a', { text: long }, { traceId: 't', spanId: '1' })]) + spansLine([span('a', { text: long }, { traceId: 't', spanId: '1' })]) + spansLine([span('a', {}, { traceId: 't', spanId: '2' })]),
+    'traces.pblog': spansLine([span('a', { text: long }, { traceId: 't', spanId: '1' })]) + spansLine([span('a', { text: long }, { traceId: 't', spanId: '1' })]) + spansLine([span('a', {}, { traceId: 't', spanId: '2' })]),
   }
   await inFolder(files, async (dir) => {
     const { logs } = await buildSource(dir)
@@ -319,7 +345,7 @@ const promptEvents = (n) => Array.from({ length: n }, (_, i) => event(1000 + i, 
 }))
 
 test('the columns shown first are worked out from what the rows hold: the session, the long text, what tells rows apart, the numbers', async () => {
-  await inFolder({ 'logs.jsonl': logLine(promptEvents(20)) }, async (dir) => {
+  await inFolder({ 'logs.pblog': logLine(promptEvents(20)) }, async (dir) => {
     const file = (await buildSource(dir)).logs.files[0].data
     // time, then the session; then the longest text; then what varies within a session (success, the tool: fewer values first); then a number
     assert.deepEqual(file.defaultColumns, ['time', 'session.id', 'prompt', 'success', 'tool_name', 'tokens'])
@@ -336,7 +362,7 @@ test('what describes the sender (its version, its host) is not shown first, even
   // two installs of the tool send events: the version and host differ from row to row, but they are the sender's, not the event's
   const senders = [{ 'service.version': '1.0', 'host.name': 'laptop' }, { 'service.version': '2.0', 'host.name': 'desktop' }]
   const lines = Array.from({ length: 12 }, (_, i) => logLine([event(1000 + i, 'e', { 'session.id': `s${i % 3}`, tool: ['a', 'b'][Math.floor(i / 3) % 2], note: 'x'.repeat(40 + i) })], resource(senders[i % 2]))).join('')
-  await inFolder({ 'logs.jsonl': lines }, async (dir) => {
+  await inFolder({ 'logs.pblog': lines }, async (dir) => {
     const file = (await buildSource(dir)).logs.files[0].data
     assert.ok(file.fields.includes('service.version') && file.fields.includes('host.name')) // they are in the column menu
     assert.ok(!file.defaultColumns.includes('service.version'))
@@ -347,14 +373,14 @@ test('what describes the sender (its version, its host) is not shown first, even
 
 test('a column that never changes within a session describes the session, so it is not shown first', async () => {
   const rows = Array.from({ length: 12 }, (_, i) => event(1000 + i, 'e', { 'session.id': `s${i % 3}`, terminal: ['iTerm', 'vscode', 'tmux'][i % 3], tool: ['a', 'b'][i % 2] }))
-  await inFolder({ 'logs.jsonl': logLine(rows) }, async (dir) => {
+  await inFolder({ 'logs.pblog': logLine(rows) }, async (dir) => {
     const file = (await buildSource(dir)).logs.files[0].data
     assert.deepEqual(file.defaultColumns, ['time', 'session.id', 'tool']) // "terminal" is fixed by the session; "tool" is not
   })
 })
 
 test('what is searched is what is shown first, and a kind with one row still shows something', async () => {
-  await inFolder({ 'logs.jsonl': logLine(promptEvents(20)) + logLine([event(5, 'lonely', { a: 1, b: 'x' })]) }, async (dir) => {
+  await inFolder({ 'logs.pblog': logLine(promptEvents(20)) + logLine([event(5, 'lonely', { a: 1, b: 'x' })]) }, async (dir) => {
     const { logs } = await buildSource(dir)
     const u = logs.files.find((f) => f.data.name === 'u').data
     assert.deepEqual(u.searchFields, u.defaultColumns.filter((f) => f !== 'time'))
@@ -366,16 +392,16 @@ test('what is searched is what is shown first, and a kind with one row still sho
 })
 
 test('the table opens on a prompt event if there is one, else on the most frequent log event, else on a span', async () => {
-  const withPrompt = { 'logs.jsonl': logLine([event(1, 'tool.call'), event(2, 'tool.call'), event(3, 'x.user_prompt')]) }
+  const withPrompt = { 'logs.pblog': logLine([event(1, 'tool.call'), event(2, 'tool.call'), event(3, 'x.user_prompt')]) }
   await inFolder(withPrompt, async (dir) => {
     const { logs } = await buildSource(dir)
     assert.equal(logs.index.events.find((e) => e.id === logs.index.default).name, 'x.user_prompt')
   })
-  await inFolder({ 'logs.jsonl': logLine([event(1, 'a'), event(2, 'b'), event(3, 'b')]) }, async (dir) => {
+  await inFolder({ 'logs.pblog': logLine([event(1, 'a'), event(2, 'b'), event(3, 'b')]) }, async (dir) => {
     const { logs } = await buildSource(dir)
     assert.equal(logs.index.events.find((e) => e.id === logs.index.default).name, 'b')
   })
-  await inFolder({ 'traces.jsonl': spansLine([span('only')]) }, async (dir) => {
+  await inFolder({ 'traces.pblog': spansLine([span('only')]) }, async (dir) => {
     const { logs } = await buildSource(dir)
     assert.equal(logs.index.events.find((e) => e.id === logs.index.default).name, 'only')
   })
@@ -389,7 +415,7 @@ test('a folder with nothing in it, or only one signal, still gives both views so
     assert.deepEqual(logs.index.events, [])
     assert.equal(logs.index.default, null)
   })
-  await inFolder({ 'traces.jsonl': spansLine([span('only')]) }, async (dir) => {
+  await inFolder({ 'traces.pblog': spansLine([span('only')]) }, async (dir) => {
     const { usage, logs } = await buildSource(dir)
     assert.deepEqual(usage.measures, []) // no metrics, so nothing to chart
     assert.equal(logs.index.events.length, 1)
@@ -399,12 +425,12 @@ test('a folder with nothing in it, or only one signal, still gives both views so
 // ---- a tool this code has never heard of -----------------------------------------------------------
 test('a tool that is new to the site needs no code: its metrics, attributes and events just show up', async () => {
   const files = {
-    'metrics.jsonl': metricsLine([
+    'metrics.pblog': metricsLine([
       sum('acme.widget.produced', [{ t: 100, value: 3, 'acme.line': 'north', 'acme.shift': 'day' }, { t: 160, value: 4, 'acme.line': 'south', 'acme.shift': 'night' }], { unit: 'widgets', temporality: 2 }),
       histogram('acme.widget.latency', [{ t: 100, count: 3, total: 1.5, 'acme.line': 'north' }], { unit: 'ms' }),
     ], resource({ 'service.name': 'acme-cli' })),
-    'logs.jsonl': logLine([event(100, 'acme.shipped', { 'acme.line': 'north', note: 'a fairly long free text note about the shipment' }), event(200, 'acme.recalled', { 'acme.line': 'south' })], resource({ 'service.name': 'acme-cli' })),
-    'traces.jsonl': spansLine([span('acme.assemble', { 'acme.line': 'north' })], resource({ 'service.name': 'acme-cli' })),
+    'logs.pblog': logLine([event(100, 'acme.shipped', { 'acme.line': 'north', note: 'a fairly long free text note about the shipment' }), event(200, 'acme.recalled', { 'acme.line': 'south' })], resource({ 'service.name': 'acme-cli' })),
+    'traces.pblog': spansLine([span('acme.assemble', { 'acme.line': 'north' })], resource({ 'service.name': 'acme-cli' })),
   }
   await inFolder(files, async (dir) => {
     const { usage, logs } = await buildSource(dir)
@@ -416,32 +442,7 @@ test('a tool that is new to the site needs no code: its metrics, attributes and 
   })
 })
 
-// ---- .pblog files, read through the logger's `cat` command -----------------------------------------
-// A stand-in for `python3 otel-logger.py cat FILE`: it prints FILE's sidecar ".txt" and exits with $FAKE_EXIT.
-// (The real thing is exercised end to end in tests/test_logger.py.)
-const FAKE = `import { readFileSync } from 'node:fs'
-const file = process.argv[3]
-process.stdout.write(readFileSync(file + '.txt', 'utf8'))
-if (process.env.FAKE_EXIT) { console.error('boom: the protobuf libraries are missing'); process.exit(Number(process.env.FAKE_EXIT)) }
-`
-
-async function withFakeLogger(run) {
-  const dir = mkdtempSync(path.join(tmpdir(), 'otel-pblog-'))
-  const saved = { py: process.env.OTEL_LOGGER_PYTHON, script: process.env.OTEL_LOGGER_SCRIPT, exit: process.env.FAKE_EXIT }
-  try {
-    writeFileSync(path.join(dir, 'fake.mjs'), FAKE)
-    process.env.OTEL_LOGGER_PYTHON = process.execPath
-    process.env.OTEL_LOGGER_SCRIPT = path.join(dir, 'fake.mjs')
-    delete process.env.FAKE_EXIT
-    return await run(dir)
-  } finally {
-    for (const [key, name] of [['py', 'OTEL_LOGGER_PYTHON'], ['script', 'OTEL_LOGGER_SCRIPT'], ['exit', 'FAKE_EXIT']]) {
-      if (saved[key] === undefined) delete process.env[name]
-      else process.env[name] = saved[key]
-    }
-    rmSync(dir, { recursive: true, force: true })
-  }
-}
+// ---- reading .pblog files through the logger's `cat` command (see tests/fakeLogger.js) -------------
 const tokenRecord = (t, v) => metricsLine([sum('claude_code.token.usage', [{ t, value: v, type: 'input', 'session.id': 's1' }])])
 const write = (file, text) => writeFileSync(file, text)
 
@@ -459,16 +460,6 @@ test('.pblog files are read through the logger, for metrics, log events and span
     assert.equal(usage.measures[0].rows.length, 2)
     assert.deepEqual(logs.index.events.map((e) => e.name).sort(), ['chat', 'user_prompt'])
     assert.equal(logs.files.find((f) => f.data.name === 'user_prompt').data.rows[0].prompt, 'hello there')
-  })
-})
-
-test('.pblog wins over .jsonl when a folder has both, so nothing is counted twice', async () => {
-  await withFakeLogger(async (dir) => {
-    write(path.join(dir, 'metrics.jsonl'), tokenRecord(1_760_000_000, 1) + tokenRecord(1_760_000_001, 1) + tokenRecord(1_760_000_002, 1))
-    write(path.join(dir, 'metrics.pblog'), 'binary')
-    write(path.join(dir, 'metrics.pblog.txt'), tokenRecord(1_760_000_000, 10))
-    const { usage } = await buildSource(dir)
-    assert.equal(usage.measures[0].rows.length, 1)
   })
 })
 
@@ -504,14 +495,14 @@ test('listSources gives known folders their tab order and labels, then the rest 
   }
 })
 
-test('buildDatasets and writeDatasets make one set of files per folder and a tab list', async () => {
+test('buildDatasets and writeDatasets make one set of files per folder and a tab list', () => withFakeLogger(async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'otel-root-'))
   const out = mkdtempSync(path.join(tmpdir(), 'otel-out-'))
   try {
     mkdirSync(path.join(root, 'claude'))
-    for (const [name, text] of Object.entries(deltaFolder)) writeFileSync(path.join(root, 'claude', name), text)
+    writeFolder(path.join(root, 'claude'), deltaFolder)
     mkdirSync(path.join(root, 'opencode'))
-    writeFileSync(path.join(root, 'opencode', 'logs.jsonl'), logLine([event(5, 'oc.event', { a: 'b' })]))
+    writeFolder(path.join(root, 'opencode'), { 'logs.pblog': logLine([event(5, 'oc.event', { a: 'b' })]) })
 
     const all = await buildDatasets(root)
     assert.deepEqual(all.sources.map((s) => s.id), ['claude', 'opencode'])
@@ -537,7 +528,27 @@ test('buildDatasets and writeDatasets make one set of files per folder and a tab
     rmSync(root, { recursive: true, force: true })
     rmSync(out, { recursive: true, force: true })
   }
-})
+}))
+
+test('writing a folder removes the files an earlier version left in its output, and nothing else', () => withFakeLogger(async () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'otel-root-'))
+  const out = mkdtempSync(path.join(tmpdir(), 'otel-out-'))
+  try {
+    mkdirSync(path.join(root, 'claude'))
+    writeFolder(path.join(root, 'claude'), { 'logs.pblog': logLine([event(5, 'e', { a: 'b' })]) })
+    mkdirSync(path.join(out, 'claude'))
+    mkdirSync(path.join(out, 'gone'))
+    for (const file of ['claude/prompts.json', 'claude/summary.json', 'claude/keep.json', 'gone/prompts.json']) writeFileSync(path.join(out, file), '{}')
+    writeDatasets(out, await buildDatasets(root))
+    const left = readdirSync(path.join(out, 'claude'))
+    assert.deepEqual([left.includes('prompts.json'), left.includes('summary.json')], [false, false])
+    assert.ok(left.includes('keep.json') && left.includes('usage.json')) // only the two known names go
+    assert.deepEqual(readdirSync(path.join(out, 'gone')), ['prompts.json']) // a folder that is not a tab now is left alone
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+    rmSync(out, { recursive: true, force: true })
+  }
+}))
 
 test('a folder that cannot be read is reported on its own tab, and the others still work', async () => {
   await withFakeLogger(async (root) => {

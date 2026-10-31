@@ -6,8 +6,9 @@
 # With no argument it uses the compose "logger" service of the project in the current folder. The listeners (tool,
 # port, protocol, folder) are read from the container itself, so a port you added or changed is tested as it is.
 # It assumes each port is published on 127.0.0.1 under the same number, as docker-compose.yml does.
-# It REFUSES to run unless the container's /data/logs is a scratch folder. Log files are append-only, so a
-# synthetic record sent to your real ~/otelscope (or the older ~/otel-logs, or the frozen ~/claude-otel-logs backup) could never be taken out again.
+# It REFUSES to run unless the container's /data/logs is a folder you marked as scratch (a file called
+# .otelscope-scratch in it, see README, "Test it first"). Log files are append-only, so a synthetic record sent to
+# real logs could never be taken out again: any folder not marked is treated as real, whatever it is called.
 # It also REFUSES if the container forwards a copy (OTEL_LOGGER_FORWARD_URL): start the scratch logger with that empty.
 set -uo pipefail
 
@@ -18,20 +19,24 @@ name="${1:-}"
 mounted="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/data/logs"}}{{.Source}}{{end}}{{end}}' "$name" 2>/dev/null || true)"
 [ -n "$mounted" ] || { echo "container '$name' not found, or it has no /data/logs mount (is it running? docker ps)"; exit 2; }
 here() { (cd "$1" 2>/dev/null && pwd -P) || echo "$1"; }
-for real in "$HOME/otelscope" "$HOME/otel-logs" "$HOME/claude-otel-logs"; do
-  if [ "$(here "$mounted")" = "$(here "$real")" ]; then
-    echo "REFUSING: this logger writes to your real log folder ($mounted)."
-    echo "Run the smoke test against a logger that uses a scratch folder (see README, 'Test it first')."
-    exit 2
-  fi
-done
+if [ "$(here "$mounted")" = "$(here "$HOME/otelscope")" ]; then
+  echo "REFUSING: this logger writes to your real log folder ($mounted)."
+  echo "Run the smoke test against a logger that uses a scratch folder (see README, 'Test it first')."
+  exit 2
+fi
+# That only names the usual place. Whatever else this is, it must have been marked as scratch on purpose.
+if [ ! -f "$mounted/.otelscope-scratch" ]; then
+  echo "REFUSING: $mounted is not marked as a scratch folder (it has no file called .otelscope-scratch)."
+  echo "Records sent here could never be taken out again. Use a folder made for this test (see README, 'Test it first')."
+  exit 2
+fi
 echo "logger '$name' writes to the scratch folder $mounted"
 
 # The same goes for the copy docker-compose.yml sends on (OTEL_LOGGER_FORWARD_URL): a synthetic record that reached it stays there.
 forwarding="$(docker exec "$name" printenv OTEL_LOGGER_FORWARD_URL 2>/dev/null || true)"
 if [ -n "$forwarding" ]; then
   echo "REFUSING: this logger also forwards everything to $forwarding, so the synthetic records would reach that receiver too."
-  echo "Start the scratch logger with the copy off:  OTEL_LOGGER_FORWARD_URL= OTEL_LOGS_DIR=<scratch folder> docker compose up -d"
+  echo "Start the scratch logger with the copy off (OTEL_LOGGER_FORWARD_URL empty), see README, 'Test it first'."
   exit 2
 fi
 

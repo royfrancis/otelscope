@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Read-only. Checks that nothing in your logs was deleted, changed or cut short.
 #
-# Every log file in a backup (.jsonl or .pblog) must still be the exact beginning of the same file in the live log
+# Every log file in a backup (.pblog) must still be the exact beginning of the same file in the live log
 # folder. The live file may only have grown. Run it after any step that touches the logs.
 #
 #   scripts/verify-logs-intact.sh BACKUP_DIR [LIVE_DIR]      (LIVE_DIR defaults to ~/otelscope)
@@ -39,10 +39,10 @@ while IFS= read -r -d '' file; do
     echo "CHANGED   $rel (the first $size bytes differ from the backup)"
     problems=$((problems + 1))
   fi
-done < <(find "$backup" -type f \( -name '*.jsonl' -o -name '*.pblog' \) -print0 | sort -z)
+done < <(find "$backup" -type f -name '*.pblog' -print0 | sort -z)
 
 if [ "$checked" -eq 0 ]; then
-  echo "no .jsonl or .pblog files in $backup, so there is nothing to check"
+  echo "no .pblog files in $backup, so there is nothing to check"
   exit 2
 fi
 if [ "$problems" -gt 0 ]; then

@@ -57,10 +57,10 @@ export function createScope({ fetchSources, refresh, address = browserAddress(),
     address.write(hashFor(target.tool, target.view))
   }
 
-  /** Reads the tab list again: a new folder gets its tab, and the choice stays unless its tab is gone. */
+  /** Reads the tab list again: a new folder gets its tab, and the choice stays unless its tab is gone or has no such view (a folder that failed to read has none, and gets them once it can be read). */
   async function loadSources() {
     sources.value = await fetchSources()
-    if (!sources.value.some((s) => s.id === tool.value)) syncFromAddress()
+    if (!sources.value.some((s) => s.id === tool.value) || !views.value.includes(view.value)) syncFromAddress()
     status.value = 'ready'
   }
 

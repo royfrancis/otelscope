@@ -42,7 +42,7 @@ COPY --chmod=0755 docker/site-entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Safety net, on top of .dockerignore: the build fails if generated data, logs or secrets got into the image.
 RUN test ! -e docs/public/data \
- && test -z "$(find . -path ./node_modules -prune -o \( -name '*.jsonl' -o -name '*.pblog' -o -name '.env*' \) -print)"
+ && test -z "$(find . -path ./node_modules -prune -o \( -name '*.pblog' -o -name '.env*' \) -print)"
 
 # No port here, on purpose: SITE_PORT is set when the container starts, see docker-compose.yml.
 # Inside the container the server listens on every interface; that is only safe because the port is published on

@@ -1,8 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { withFakeLogger, writeFolder } from './fakeLogger.js'
 import { writeDatasets } from '../scripts/prepare-data.mjs'
 import { createRefreshHandler, refreshDataPlugin } from '../docs/.vitepress/plugins/refreshData.js'
 import { followRange, requestRefresh } from '../docs/.vitepress/lib/refresh.js'
@@ -152,38 +153,32 @@ const tokenLine = (t, value) => JSON.stringify({ received_at: 'x', data: { resou
 const promptLine = (t, prompt) => JSON.stringify({ received_at: 'x', data: { resourceLogs: [{ resource, scopeLogs: [{ logRecords: [
   { timeUnixNano: nano(t), body: str('claude_code.user_prompt'), attributes: attrs({ 'session.id': 's1', prompt }) }] }] }] } }) + '\n'
 
-test('new activity in the logs shows up after a refresh, and the logs themselves are not touched', async () => {
-  const root = mkdtempSync(path.join(tmpdir(), 'refresh-'))
-  try {
-    const logs = path.join(root, 'logs', 'claude'), out = path.join(root, 'out') // the handler reads the log ROOT: one folder per tool
-    const { mkdirSync } = await import('node:fs')
-    mkdirSync(logs, { recursive: true })
-    writeFileSync(path.join(logs, 'metrics.jsonl'), tokenLine(1_760_000_000, 10))
-    writeFileSync(path.join(logs, 'logs.jsonl'), promptLine(1_760_000_001, 'first'))
-    const before = ['metrics.jsonl', 'logs.jsonl'].map((f) => readFileSync(path.join(logs, f)))
+test('new activity in the logs shows up after a refresh, and the logs themselves are not touched', () => withFakeLogger(async (root) => {
+  const logs = path.join(root, 'logs', 'claude'), out = path.join(root, 'out') // the handler reads the log ROOT: one folder per tool
+  mkdirSync(logs, { recursive: true })
+  writeFolder(logs, { 'metrics.pblog': tokenLine(1_760_000_000, 10), 'logs.pblog': promptLine(1_760_000_001, 'first') })
+  const files = ['metrics.pblog', 'logs.pblog', 'metrics.pblog.txt', 'logs.pblog.txt'] // each log and what the fake `cat` prints for it
+  const before = files.map((f) => readFileSync(path.join(logs, f)))
 
-    const handler = createRefreshHandler({ dir: path.join(root, 'logs'), out })
-    const read = (...parts) => JSON.parse(readFileSync(path.join(out, 'claude', ...parts), 'utf8'))
-    const rows = () => {
-      const index = read('logs.json')
-      return { tokens: read('usage.json').measures[0].rows.length, prompts: read('logs', `${index.default}.json`).rows.length }
-    }
-    const res = response()
-    await handler(request(), res)
-    assert.equal(res.statusCode, 200)
-    assert.deepEqual(rows(), { tokens: 1, prompts: 1 })
-
-    appendFileSync(path.join(logs, 'metrics.jsonl'), tokenLine(1_760_000_100, 20))
-    appendFileSync(path.join(logs, 'logs.jsonl'), promptLine(1_760_000_101, 'second'))
-    await handler(request(), response())
-    assert.deepEqual(rows(), { tokens: 2, prompts: 2 })
-
-    // the handler only ever read the logs: what was there is still there, byte for byte
-    ;['metrics.jsonl', 'logs.jsonl'].forEach((f, i) => assert.ok(readFileSync(path.join(logs, f)).subarray(0, before[i].length).equals(before[i])))
-  } finally {
-    rmSync(root, { recursive: true })
+  const handler = createRefreshHandler({ dir: path.join(root, 'logs'), out })
+  const read = (...parts) => JSON.parse(readFileSync(path.join(out, 'claude', ...parts), 'utf8'))
+  const rows = () => {
+    const index = read('logs.json')
+    return { tokens: read('usage.json').measures[0].rows.length, prompts: read('logs', `${index.default}.json`).rows.length }
   }
-})
+  const res = response()
+  await handler(request(), res)
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(rows(), { tokens: 1, prompts: 1 })
+
+  appendFileSync(path.join(logs, 'metrics.pblog.txt'), tokenLine(1_760_000_100, 20)) // the logger appends: here, to what `cat` prints
+  appendFileSync(path.join(logs, 'logs.pblog.txt'), promptLine(1_760_000_101, 'second'))
+  await handler(request(), response())
+  assert.deepEqual(rows(), { tokens: 2, prompts: 2 })
+
+  // the handler only ever read the logs: what was there is still there, byte for byte
+  files.forEach((f, i) => assert.ok(readFileSync(path.join(logs, f)).subarray(0, before[i].length).equals(before[i])))
+}))
 
 test('a missing log folder is reported and nothing is written', async () => {
   const root = mkdtempSync(path.join(tmpdir(), 'refresh-'))

@@ -7,9 +7,8 @@
 // Runs on every `npm run dev` / `npm run build`, and on Refresh in the site.
 //
 // Usage: node scripts/prepare-data.mjs [--dir <log root>] [--out <output dir>]
-// The log root is $OTEL_LOGGER_DIR (the logger's own setting), else ~/otelscope. Each folder may hold the logger's
-// .pblog files or the old .jsonl files (.pblog wins when both are there).
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+// The log root is $OTEL_LOGGER_DIR (the logger's own setting), else ~/otelscope. Each folder holds the logger's .pblog files.
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -17,6 +16,9 @@ import { attributeKeys, buildLogs, readEvents } from './data/events.mjs'
 import { buildUsage, pickSessionKey, readPoints } from './data/metrics.mjs'
 
 const SNIPPET_CHARS = 90
+// What earlier versions of this step wrote into a folder's output and nothing reads now. They hold prompt text, and the
+// dev server serves (and a build copies) everything in the output folder, so writing a folder's files removes them.
+const OBSOLETE_FILES = ['prompts.json', 'summary.json']
 
 const snippet = (text) => {
   const flat = String(text ?? '').replace(/\s+/g, ' ').trim()
@@ -120,6 +122,7 @@ export function writeDatasets(out, { generatedAt, source, sources }) {
     for (const f of s.logs.files) write(`${s.id}/logs/${f.id}.json`, f.data) // the rows first, then the index that names them
     write(`${s.id}/usage.json`, s.usage)
     write(`${s.id}/logs.json`, s.logs.index)
+    for (const name of OBSOLETE_FILES) rmSync(path.join(out, s.id, name), { force: true })
   }
   write('sources.json', { generatedAt, source, sources: sources.map(({ id, label, error }) => ({ id, label, ...(error ? { error } : {}) })) })
   return notes

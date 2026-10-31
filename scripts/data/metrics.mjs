@@ -32,7 +32,8 @@ const temporalityOf = (shape) => {
  *    (same resource, attributes and start time); a value that drops is a restart. The first sample counts in full when the
  *    counter began while we were listening (its start time is not before the first datapoint we hold), and is only the
  *    baseline when it began earlier, since what happened before then was never logged;
- *  - gauges and summaries are not added up (a gauge is a level, not an amount), nor a cumulative sum that can go down.
+ *  - gauges and summaries are not added up (a gauge is a level, not an amount), nor a cumulative sum that is not marked
+ *    monotonic (one that can go down is a level too, and protobuf records "not monotonic" by leaving the field out).
  */
 export async function readPoints(dir) {
   const points = []
@@ -48,7 +49,8 @@ export async function readPoints(dir) {
           if (!shape || !metric.name) continue
           const isHistogram = !metric.sum
           const cumulative = temporalityOf(shape) === 2
-          if (!isHistogram && cumulative && shape.isMonotonic === false) continue
+          // protobuf leaves a false `isMonotonic` out of the record, so only an explicit true is a counter that cannot go down
+          if (!isHistogram && cumulative && shape.isMonotonic !== true) continue
           for (const dp of shape.dataPoints ?? []) {
             const t = toSeconds(dp.timeUnixNano)
             const attrs = { ...resource, ...attrsToObject(dp.attributes) }

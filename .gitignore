@@ -17,4 +17,3 @@ __pycache__/
 
 # Logs are never part of the project
 *.pblog
-*.jsonl

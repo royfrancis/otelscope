@@ -35,7 +35,6 @@ COMMANDS
     otel-logger.py [serve]                       receive and log (the default)
     otel-logger.py cat FILE...                   print the records as JSON lines, {"received_at", "data"}, for jq
     otel-logger.py listeners                     print the listeners OTEL_LOGGER_LISTEN describes: name, port, protocol, dir
-    otel-logger.py convert SRC DST [--dry-run]   turn old metrics/logs/traces .jsonl files into .pblog files
 
 Needs `protobuf` and `opentelemetry-proto` (see requirements.txt; Python 3.10+).
 
@@ -73,7 +72,6 @@ from urllib.parse import urlsplit
 
 SIGNALS = ("metrics", "logs", "traces")
 EXT = ".pblog"  # what the logger writes
-LEGACY_EXT = ".jsonl"  # what the previous logger wrote, and what `convert` reads
 DEFAULT_LISTEN = "claude:4318"
 PROTOCOLS = {"any": "any", "protobuf": "protobuf", "http/protobuf": "protobuf", "json": "json", "http/json": "json"}
 DEFAULT_CLAUDE_SERVICES = "claude-code,claude-code-desktop"
@@ -107,7 +105,7 @@ class HttpError(Exception):
 # ---- protobuf <-> JSON ----------------------------------------------------------------------------
 # JSON is only used to read: `cat` shows records as the JSON Claude Code's own JSON exporter wrote (numbers,
 # hex ids, integer enums, and a few fields spelled out as zero or empty, which protobuf cannot say).
-# `convert` and requests that arrive as JSON go the other way.
+# Requests that arrive as JSON go the other way.
 _proto = None
 
 
@@ -250,14 +248,9 @@ def service_names(signal, message):
 
 # ---- the file format --------------------------------------------------------------------------------
 def to_text(ns):
-    """Nanoseconds since the epoch -> the ISO text the JSON logs used (microsecond precision, UTC)."""
+    """Nanoseconds since the epoch -> the ISO text `cat` prints as received_at (microsecond precision, UTC)."""
     seconds, rest = divmod(ns, 10**9)
     return (EPOCH + timedelta(seconds=seconds, microseconds=rest // 1000)).isoformat()
-
-
-def to_ns(text):
-    delta = datetime.fromisoformat(text) - EPOCH
-    return (delta.days * 86400 + delta.seconds) * 10**9 + delta.microseconds * 1000
 
 
 def _varint(number):
@@ -372,7 +365,7 @@ def signal_of(path):
     raise SystemExit(f"cannot tell the signal from the file name '{name}': use --signal metrics, logs or traces")
 
 
-# ---- commands: cat and convert ---------------------------------------------------------------------
+# ---- commands: cat ---------------------------------------------------------------------------------
 def cat(paths, out, signal=None):
     """Print each record as {"received_at", "data"}, one JSON line. Returns how many damaged records were skipped."""
     skipped = 0
@@ -388,69 +381,6 @@ def cat(paths, out, signal=None):
             out.write(json.dumps({"received_at": to_text(ns), "data": data}, ensure_ascii=False) + "\n")
         skipped += stats["skipped"]
     return skipped
-
-
-def convert(source, destination, dry_run=False, out=sys.stdout):
-    """Turn the old metrics/logs/traces .jsonl files in `source` into .pblog files in `destination`.
-
-    Every record is converted and decoded back, and must come out exactly as it went in (data and timestamp);
-    if even one does not, nothing is written. The source is only read. The destination files are created
-    exclusively, so existing files are never overwritten. Returns 0 on success."""
-    source, destination = Path(source), Path(destination)
-    plan = [(s, source / f"{s}{LEGACY_EXT}", destination / f"{s}{EXT}") for s in SIGNALS if (source / f"{s}{LEGACY_EXT}").exists()]
-    if not plan:
-        print(f"no metrics, logs or traces {LEGACY_EXT} files in {source}", file=sys.stderr)
-        return 2
-    clashes = [str(dst) for _, _, dst in plan if dst.exists()]
-    if clashes and not dry_run:
-        print("refusing to overwrite: " + ", ".join(clashes), file=sys.stderr)
-        return 2
-
-    converted, failed = [], False
-    for kind, src, dst in plan:
-        frames, unreadable, differing, first_bad = [], 0, 0, None
-        with open(src, "rb") as f:
-            for number, line in enumerate(f, 1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    data, text = record["data"], record["received_at"]
-                    ns = to_ns(text)
-                except (ValueError, KeyError, TypeError):
-                    unreadable += 1
-                    continue
-                try:
-                    payload = json_to_proto(kind, data)
-                    same = proto_to_json(kind, payload) == data and to_text(ns) == text
-                except ValueError:
-                    same = False
-                if same:
-                    frames.append(frame(ns, payload))
-                else:
-                    differing += 1
-                    first_bad = first_bad or number
-        out.write(
-            f"{src.name}: {len(frames)} records ok, {unreadable} unreadable line(s) left behind, {differing} would not survive"
-            + (f" (first at line {first_bad})" if first_bad else "")
-            + f"; {src.stat().st_size / MB:.1f} MB -> {sum(map(len, frames)) / MB:.1f} MB\n"
-        )
-        failed = failed or differing > 0
-        converted.append((dst, frames))
-
-    if failed:
-        print("not converted: some records would change. Nothing was written.", file=sys.stderr)
-        return 1
-    if dry_run:
-        out.write("dry run: every record converts exactly. Nothing was written.\n")
-        return 0
-    destination.mkdir(parents=True, exist_ok=True)
-    for dst, frames in converted:
-        with open(dst, "xb") as f:  # exclusive create: never overwrites
-            for item in frames:
-                f.write(item)
-    out.write(f"written to {destination}. The source files were not touched.\n")
-    return 0
 
 
 # ---- forwarding (optional) ------------------------------------------------------------------------
@@ -678,6 +608,15 @@ class Logger:
 
 
 # ---- HTTP ------------------------------------------------------------------------------------------
+def http_length(text, base):
+    """A length as HTTP writes it: digits only. int() alone takes a sign too ("-1" makes read() go on to the end of the
+    stream, past the size limit), and spaces, underscores and 0x. Raises ValueError."""
+    text = (text.decode("ascii") if isinstance(text, bytes) else text).strip()
+    if not text or not set(text) <= set("0123456789abcdefABCDEF" if base == 16 else "0123456789"):
+        raise ValueError("not a length")
+    return int(text, base)
+
+
 class Handler(BaseHTTPRequestHandler):
     logger = None  # set per listener in serve()
     timeout = 30  # a stalled client must not hold a thread for ever
@@ -704,7 +643,7 @@ class Handler(BaseHTTPRequestHandler):
             if "chunked" in self.headers.get("Transfer-Encoding", "").lower():
                 chunks, total = [], 0
                 while True:
-                    size = int(self.rfile.readline().split(b";")[0].strip(), 16)
+                    size = http_length(self.rfile.readline().split(b";")[0], 16)
                     if size == 0:
                         while self.rfile.readline() not in (b"\r\n", b"\n", b""):
                             pass  # skip trailers
@@ -712,9 +651,11 @@ class Handler(BaseHTTPRequestHandler):
                     total += size
                     if total > limit:
                         raise HttpError(413)
-                    chunks.append(self.rfile.read(size))
-                    self.rfile.readline()  # CRLF after each chunk
-            length = int(self.headers.get("Content-Length", 0))
+                    chunk = self.rfile.read(size)
+                    if len(chunk) != size or self.rfile.readline() not in (b"\r\n", b"\n"):  # exactly `size` bytes, then the line end
+                        raise ValueError("broken chunk")
+                    chunks.append(chunk)
+            length = http_length(self.headers.get("Content-Length", "0"), 10)
         except ValueError as err:
             raise HttpError(400) from err
         if length > limit:
@@ -797,10 +738,6 @@ def main(argv=None):
     cat_parser = commands.add_parser("cat", help="print records as JSON lines, for jq")
     cat_parser.add_argument("files", nargs="+", metavar="FILE", help="a metrics/logs/traces .pblog file")
     cat_parser.add_argument("--signal", choices=SIGNALS, help="needed only if the file is not named metrics/logs/traces.pblog")
-    convert_parser = commands.add_parser("convert", help="turn old .jsonl logs into .pblog files")
-    convert_parser.add_argument("source", metavar="SRC", help="folder with metrics.jsonl, logs.jsonl, traces.jsonl (only read)")
-    convert_parser.add_argument("destination", metavar="DST", help="folder for the .pblog files (existing files are never overwritten)")
-    convert_parser.add_argument("--dry-run", action="store_true", help="check that every record converts exactly; write nothing")
     args = parser.parse_args(argv)
 
     if not protobuf_available():
@@ -810,15 +747,13 @@ def main(argv=None):
         return serve()
     if command == "listeners":
         return show_listeners()
-    if command == "cat":
-        if hasattr(posix_signal, "SIGPIPE"):
-            posix_signal.signal(posix_signal.SIGPIPE, posix_signal.SIG_DFL)  # `| head` ends quietly, like cat
-        sys.stdout.reconfigure(encoding="utf-8")
-        skipped = cat(args.files, sys.stdout, args.signal)
-        if skipped:
-            print(f"skipped {skipped} damaged record(s)", file=sys.stderr)
-        return 0
-    return convert(args.source, args.destination, args.dry_run)
+    if hasattr(posix_signal, "SIGPIPE"):  # cat
+        posix_signal.signal(posix_signal.SIGPIPE, posix_signal.SIG_DFL)  # `| head` ends quietly, like cat
+    sys.stdout.reconfigure(encoding="utf-8")
+    skipped = cat(args.files, sys.stdout, args.signal)
+    if skipped:
+        print(f"skipped {skipped} damaged record(s)", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":

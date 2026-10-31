@@ -170,6 +170,16 @@ test('it recovers a page whose tab list failed to load', async () => {
   assert.equal(scope.tool.value, 'claude')
 })
 
+test('a folder that could not be read gets its views once it can, so the page is not left blank', async () => {
+  const unreadable = SOURCES.map((s) => (s.id === 'claude' ? { ...s, error: 'needs the protobuf libraries' } : s))
+  const { scope, state } = makeScope({ state: { sources: unreadable }, address: makeAddress('#claude/logs') })
+  await scope.start()
+  assert.deepEqual([scope.tool.value, scope.view.value, scope.views.value], ['claude', '', []]) // an error to show, no view
+  state.sources = SOURCES // the libraries were installed; Refresh reads the folder
+  await scope.refresh()
+  assert.deepEqual([scope.tool.value, scope.view.value], ['claude', 'logs']) // the view the address names
+})
+
 test('overlapping refreshes make one request', async () => {
   const { scope, state } = makeScope()
   await scope.start()

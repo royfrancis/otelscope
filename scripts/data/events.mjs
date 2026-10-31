@@ -2,7 +2,7 @@
 // a log record, the name of a span) and each group is its own file, so the table loads one kind at a time: a busy tool
 // has tens of thousands of rows in all, which no page should load at once. Which kinds there are is read from the logs.
 import { createHash } from 'node:crypto'
-import { attrsToObject, readRecords, toSeconds } from './read.mjs'
+import { attrsToObject, otlpValue, readRecords, toSeconds } from './read.mjs'
 
 const CELL_MAX = 10_000 // a longer text is cut here (the prompts people write are well under this)
 const clip = (v) => (typeof v === 'string' && v.length > CELL_MAX ? `${v.slice(0, CELL_MAX - 1)}…` : v)
@@ -37,11 +37,14 @@ async function readLogRecords(dir, groups, resourceKeys) {
       for (const sl of rl.scopeLogs ?? []) {
         for (const lr of sl.logRecords ?? []) {
           const attrs = attrsToObject(lr.attributes)
-          const body = lr.body?.stringValue
-          const name = String(attrs['event.name'] ?? body ?? '(log record)')
+          const body = otlpValue(lr.body) // any kind of body: text, a number, a boolean, a list or a map (these two as JSON text)
+          // the event name: OTLP's own field, else the older `event.name` attribute, else a text body (the message), else nothing.
+          // Only a real text body can name it: a list or a map, however it reads as JSON, would make a kind of its own for every value.
+          const named = lr.eventName || attrs['event.name']
+          const name = String(named ?? (lr.body?.stringValue || '(log record)'))
           const row = { time: toSeconds(lr.timeUnixNano && lr.timeUnixNano !== '0' ? lr.timeUnixNano : lr.observedTimeUnixNano) }
           putAttrs(row, resource, attrs, resourceKeys)
-          if (attrs['event.name'] != null && body && body !== name) row.body = clip(body) // the name was in the attributes, so the body says something else
+          if (body != null && body !== '' && body !== name) row.body = clip(body) // the name was not the body, so the body says something else
           if (lr.severityText) row.severity = lr.severityText
           addRow(groups, 'log', name, row)
         }

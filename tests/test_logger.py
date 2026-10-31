@@ -50,7 +50,7 @@ RESOURCE = {
 }
 SCOPE = {"name": "com.anthropic.claude_code", "version": "2.1.0"}
 
-# The shape Claude Code's own JSON exporter writes (checked against real logs with `convert --dry-run`).
+# The shape Claude Code's own JSON exporter writes.
 METRICS = {"resourceMetrics": [{"resource": RESOURCE, "scopeMetrics": [{"scope": SCOPE, "metrics": [
     {"name": "claude_code.token.usage", "description": "Number of tokens used", "unit": "tokens", "sum": {
         "dataPoints": [{"attributes": [
@@ -323,6 +323,36 @@ class ServeTests(LoggerCase):
         self.assertEqual(out.getvalue(), "claude\t4318\tany\t/d/claude\n")
 
 
+# The logger's entry point: next to this file in the repository, installed as entrypoint.sh in the logger image. In the
+# site image that name is the site's own entry point, which has no is_mounted(), so only a script that defines it counts.
+ENTRYPOINT = next((p for p in (ROOT / "docker" / "logger-entrypoint.sh", Path("/usr/local/bin/entrypoint.sh"))
+                   if p.is_file() and "is_mounted()" in p.read_text()), None)
+
+
+@unittest.skipUnless(ENTRYPOINT and shutil.which("bash") and shutil.which("python3"), "the entry point script, bash or python3 is not here")
+class MountCheckTests(unittest.TestCase):
+    """The entry point's is_mounted(), run against a fake /proc/self/mountinfo that has just one mount."""
+
+    def test_only_what_is_really_inside_the_mount_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()  # as the check sees it: tmp may itself be behind a symlink
+            mounted, elsewhere = root / "mounted", root / "elsewhere"
+            mounted.mkdir()
+            elsewhere.mkdir()
+            (mounted / "link").symlink_to(elsewhere)
+            info = root / "mountinfo"
+            info.write_text(f"1 0 0:1 / {mounted} rw - ext4 /dev/x rw\n")
+
+            def is_mounted(folder):
+                script = 'eval "$(sed -n "/^is_mounted()/,/^}/p" "$0")"; is_mounted "$1"'
+                return subprocess.run(["bash", "-c", script, str(ENTRYPOINT), str(folder)], env={**os.environ, "MOUNTINFO": str(info)}).returncode == 0
+
+            for folder in (mounted, mounted / "claude", mounted / "a" / "b", mounted / "sub" / ".." / "claude"):
+                self.assertTrue(is_mounted(folder), folder)
+            for folder in (elsewhere, mounted / ".." / "elsewhere", mounted / ".." / ".." / "x", mounted / "link", mounted / "link" / "claude"):
+                self.assertFalse(is_mounted(folder), folder)  # outside it, however it is written
+
+
 class ProtocolTests(LoggerCase):
     def test_a_protobuf_port_refuses_json_and_the_other_way_round(self):
         for protocol, refused, accepted in (("protobuf", JSON, PROTO), ("json", PROTO, JSON)):
@@ -400,6 +430,27 @@ class RequestReadingTests(unittest.TestCase):
             with self.assertRaises(L.HttpError) as bad:
                 self.reader(raw, **headers)._read_body(100)
             self.assertEqual(bad.exception.status, 400)
+
+    def test_a_length_is_digits_only_so_a_negative_one_cannot_get_past_the_limit(self):
+        # int() takes a sign, and read(-1) goes on to the end of the stream: -1 would skip the size limit altogether
+        chunked = {"Transfer-Encoding": "chunked"}
+        cases = [(b"x" * 10, {"Content-Length": value}) for value in ("-1", "-5", "+5", " -1", "0x5", "5_0", "")]
+        cases += [(b"%s\r\nabc\r\n0\r\n\r\n" % size, chunked) for size in (b"-1", b"-3", b"+3", b"0x3", b"1_0", b"")]
+        for raw, headers in cases:
+            with self.assertRaises(L.HttpError, msg=(raw, headers)) as bad:
+                self.reader(raw, **headers)._read_body(100)
+            self.assertEqual(bad.exception.status, 400, (raw, headers))
+
+    def test_a_chunk_is_exactly_as_long_as_it_says_and_ends_the_line(self):
+        chunked = {"Transfer-Encoding": "chunked"}
+        for raw in (b"3\r\nabcde\r\n0\r\n\r\n",  # longer than it says: the rest used to be thrown away
+                    b"5\r\nab",  # the stream ends inside the chunk
+                    b"3\r\nabc",  # ... or right after it, with no line end
+                    b"3\r\nabcX\r\n0\r\n\r\n"):  # something other than the line end after the data
+            with self.assertRaises(L.HttpError, msg=raw) as bad:
+                self.reader(raw, **chunked)._read_body(100)
+            self.assertEqual(bad.exception.status, 400, raw)
+        self.assertEqual(self.reader(b"3\nabc\n0\n\n", **chunked)._read_body(100), b"abc")  # a bare line feed is still a line end
 
 
 class FakeSocket:
@@ -481,6 +532,18 @@ class HttpHandlerTests(LoggerCase):
 
 
 class ProtobufRequestTests(LoggerCase):
+    def test_a_sum_that_is_not_monotonic_has_no_isMonotonic_in_what_cat_prints(self):
+        """protobuf leaves a false out, so the site has to read a missing isMonotonic as false (scripts/data/metrics.mjs)."""
+        shapes = {}
+        for monotonic in (True, False):
+            data = {"resourceMetrics": [{"resource": RESOURCE, "scopeMetrics": [{"scope": SCOPE, "metrics": [
+                {"name": "x.queue", "unit": "", "sum": {"aggregationTemporality": 2, "isMonotonic": monotonic, "dataPoints": [
+                    {"attributes": [], "startTimeUnixNano": "1760000000000000000", "timeUnixNano": "1760000060000000000", "asDouble": 1.0}]}}]}]}]}
+            printed = L.proto_to_json("metrics", L.json_to_proto("metrics", data))
+            shapes[monotonic] = printed["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["sum"]
+        self.assertIs(shapes[True]["isMonotonic"], True)
+        self.assertNotIn("isMonotonic", shapes[False])
+
     def test_the_payload_is_stored_exactly_as_sent(self):
         for signal, fixture in FIXTURES.items():
             with self.subTest(signal=signal):
@@ -623,13 +686,16 @@ class FramingTests(unittest.TestCase):
         outer = L.frame(1, L.frame(2, b"inner"))
         self.assertEqual(self.read(self.write("a.pblog", outer)), ([(1, L.frame(2, b"inner"))], 0))
 
-    def test_received_at_text_round_trips_exactly(self):
-        for text in ("2026-10-15T12:40:00+00:00", "2026-10-15T12:40:00.123456+00:00", "2026-10-30T23:59:59.000001+00:00"):
-            self.assertEqual(L.to_text(L.to_ns(text)), text)
+    def test_received_at_is_printed_as_utc_text_with_microseconds(self):
+        for ns, text in ((1_792_068_000_000_000_000, "2026-10-15T12:40:00+00:00"),
+                         (1_792_068_000_123_456_000, "2026-10-15T12:40:00.123456+00:00"),
+                         (1_793_404_799_000_001_000, "2026-10-30T23:59:59.000001+00:00"),
+                         (1_792_068_000_123_456_789, "2026-10-15T12:40:00.123456+00:00")):  # anything below a microsecond is cut
+            self.assertEqual(L.to_text(ns), text)
 
 
 class CatTests(LoggerCase):
-    def test_cat_prints_the_old_json_lines(self):
+    def test_cat_prints_json_lines(self):
         for signal, fixture in FIXTURES.items():
             self.post_proto(f"/v1/{signal}", signal, fixture)
         for signal, fixture in FIXTURES.items():
@@ -697,8 +763,8 @@ class AppendOnlyTests(LoggerCase):
                 mode = node.args[1] if len(node.args) > 1 else next((k.value for k in node.keywords if k.arg == "mode"), None)
                 self.assertIsInstance(mode, ast.Constant, f"line {node.lineno}: open() needs a literal mode")
                 modes.add(mode.value)
-        # append to the logs; read (logs, old logs); create-only for convert's new files: nothing can overwrite
-        self.assertEqual(modes, {"ab", "rb", "xb"})
+        # append to the logs, and read them: nothing can overwrite
+        self.assertEqual(modes, {"ab", "rb"})
 
 
 class QuietTests(LoggerCase):
@@ -846,93 +912,9 @@ class ForwarderTests(unittest.TestCase):
             self.assertEqual(payloads(Path(tmp) / "claude" / "logs.pblog"), [wire, wire])
 
 
-def old_logs(folder, records):
-    """Write the old logger's files: one JSON line per record, {"received_at", "data"}."""
-    Path(folder).mkdir(parents=True, exist_ok=True)
-    for signal, items in records.items():
-        text = "".join(json.dumps({"received_at": at, "data": data}, ensure_ascii=False) + "\n" for at, data in items)
-        (Path(folder) / f"{signal}.jsonl").write_text(text, encoding="utf-8")
-
-
-class ConvertTests(unittest.TestCase):
-    AT = ("2026-10-15T12:40:00+00:00", "2026-10-15T12:40:01.250000+00:00")  # one without microseconds, one with
-
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
-        self.src, self.dst = self.root / "old", self.root / "new" / "claude"
-        old_logs(self.src, {s: [(self.AT[0], f), (self.AT[1], f)] for s, f in FIXTURES.items()})
-
-    def run_convert(self, *args, **kw):
-        out = io.StringIO()
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            code = L.convert(self.src, self.dst, *args, out=out, **kw)
-        return code, out.getvalue(), err.getvalue()
-
-    def hashes(self, folder):
-        return {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path(folder).iterdir())}
-
-    def test_it_converts_and_cat_reads_back_exactly_what_the_old_files_held(self):
-        code, report, _ = self.run_convert()
-        self.assertEqual(code, 0, report)
-        for signal, fixture in FIXTURES.items():
-            self.assertEqual(stored(self.dst / f"{signal}.pblog"), [(self.AT[0], fixture), (self.AT[1], fixture)])
-            out = io.StringIO()
-            L.cat([self.dst / f"{signal}.pblog"], out)
-            old = [json.loads(line) for line in (self.src / f"{signal}.jsonl").read_text(encoding="utf-8").splitlines()]
-            self.assertEqual([json.loads(line) for line in out.getvalue().splitlines()], old)  # the timestamps too
-
-    def test_a_dry_run_checks_everything_and_writes_nothing(self):
-        code, report, _ = self.run_convert(True)
-        self.assertEqual(code, 0)
-        self.assertIn("Nothing was written", report)
-        self.assertFalse((self.root / "new").exists())
-
-    def test_it_never_overwrites(self):
-        self.dst.mkdir(parents=True)
-        (self.dst / "logs.pblog").write_bytes(b"precious")
-        code, _, err = self.run_convert()
-        self.assertEqual(code, 2)
-        self.assertIn("refusing to overwrite", err)
-        self.assertEqual(self.hashes(self.dst), {"logs.pblog": hashlib.sha256(b"precious").hexdigest()})  # and nothing else was made
-
-    def test_the_source_is_only_read(self):
-        before = self.hashes(self.src)
-        self.run_convert(True)
-        self.run_convert()
-        self.assertEqual(self.hashes(self.src), before)
-
-    def test_one_record_that_would_change_stops_everything(self):
-        changing = json.loads(json.dumps(LOGS))
-        changing["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["bogusField"] = 1  # a field protobuf has no place for
-        old_logs(self.src, {"logs": [(self.AT[0], LOGS), (self.AT[1], changing)]})
-        code, report, err = self.run_convert()
-        self.assertEqual(code, 1)
-        self.assertIn("1 would not survive (first at line 2)", report)
-        self.assertIn("Nothing was written", err)
-        self.assertFalse((self.root / "new").exists())  # not even the files that were fine
-
-    def test_unreadable_lines_are_reported_and_left_behind(self):
-        with open(self.src / "logs.jsonl", "ab") as f:
-            f.write(b'{"received_at": "2026-10-15T12:4')  # half a line, as a crash leaves it
-        code, report, _ = self.run_convert()
-        self.assertEqual(code, 0)
-        self.assertIn("logs.jsonl: 2 records ok, 1 unreadable line(s) left behind", report)
-        self.assertEqual(len(payloads(self.dst / "logs.pblog")), 2)
-
-    def test_nothing_to_convert_is_an_error(self):
-        shutil.rmtree(self.src)
-        self.src.mkdir()
-        code, _, err = self.run_convert()
-        self.assertEqual(code, 2)
-        self.assertIn("no metrics, logs or traces", err)
-
-
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class SiteContractTests(unittest.TestCase):
-    """The site's data step must make the same datasets from .pblog files (either way in) as from the old JSON files."""
+    """The site's data step must make the same datasets from .pblog files whether the tool sent JSON or protobuf."""
 
     def claude_like(self):
         def point(t, value, **attrs):
@@ -995,26 +977,22 @@ class SiteContractTests(unittest.TestCase):
         index = self.read(folder, "logs.json")
         return {"usage": self.read(folder, "usage.json"), "index": index, "events": {e["id"]: self.read(folder / "logs", f"{e['id']}.json") for e in index["events"]}}
 
-    def test_the_site_makes_the_same_datasets_from_either_way_in_and_from_the_old_files(self):
+    def test_the_site_makes_the_same_datasets_whichever_way_a_tool_sends(self):
         outputs = []
         with tempfile.TemporaryDirectory() as tmp:
-            for name in ("old", "json", "proto"):
+            for name in ("json", "proto"):
                 root = Path(tmp) / name / "root"  # the log root: one folder per tool
-                if name == "old":  # the old logger's files, written the way it wrote them
-                    old_logs(root / "claude", {s: [("2026-10-15T12:40:00+00:00", d)] for s, d in self.claude_like().items()})
-                else:
-                    log = L.Logger(root)
-                    for signal, data in self.claude_like().items():
-                        if name == "json":
-                            reply = log.handle_post(f"/v1/{signal}", JSON, json.dumps(data).encode())
-                        else:
-                            reply = log.handle_post(f"/v1/{signal}", PROTO, L.json_to_proto(signal, data))
-                        self.assertEqual(reply.status, 200)
+                log = L.Logger(root)
+                for signal, data in self.claude_like().items():
+                    if name == "json":
+                        reply = log.handle_post(f"/v1/{signal}", JSON, json.dumps(data).encode())
+                    else:
+                        reply = log.handle_post(f"/v1/{signal}", PROTO, L.json_to_proto(signal, data))
+                    self.assertEqual(reply.status, 200)
                 out = Path(tmp) / name / "out"
-                self.run_data_step(root, out)  # reads the folder as it is: .jsonl for "old", .pblog (through this logger's `cat`) for the others
+                self.run_data_step(root, out)  # reads the .pblog files through this logger's `cat`
                 outputs.append(self.everything(out, "claude"))
         self.assertEqual(outputs[0], outputs[1])
-        self.assertEqual(outputs[0], outputs[2])
         usage = outputs[0]["usage"]
         self.assertEqual([(m["key"], len(m["rows"])) for m in usage["measures"]], [("claude_code.token.usage", 2), ("claude_code.cost.usage", 1)])  # and it is not an empty comparison
         self.assertEqual([e["name"] for e in outputs[0]["index"]["events"]], ["claude_code.user_prompt"])

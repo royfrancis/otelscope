@@ -49,7 +49,7 @@ docker compose down
 
 **The Claude Code guard.** The `claude` port keeps a request only if its `service.name` is `claude-code` or `claude-code-desktop`; anything else sent there goes to `~/otelscope/other/`. Claude Code data that arrives on another tool's port is moved to `~/otelscope/claude/`. So neither mixes into the other's files, which can't be cleaned afterward.
 
-**The files.** A `.pblog` file is a series of records, each appended in one write: a marker, a length, a CRC32 and a small protobuf `Record` with the receive time and **the OTLP request exactly as the tool sent it** (JSON is converted to protobuf once, on arrival, so set every tool to protobuf, see *Tool settings*). Details are in `otel-record.proto`. Files are only opened for appending (or, by `convert`, created new): nothing deletes, truncates or rewrites them, and a test enforces that. The logger never prints request content.
+**The files.** A `.pblog` file is a series of records, each appended in one write: a marker, a length, a CRC32 and a small protobuf `Record` with the receive time and **the OTLP request exactly as the tool sent it** (JSON is converted to protobuf once, on arrival, so set every tool to protobuf, see *Tool settings*). Details are in `otel-record.proto`. Files are only opened for appending: nothing deletes, truncates or rewrites them, and a test enforces that. The logger never prints request content.
 
 **Two images.** `Dockerfile.logger` (Python, the protobuf libraries, `otel-logger.py`) **writes** the logs. `Dockerfile.site` (Node, VitePress, and Python only to read the `.pblog` files) serves the website and **reads** them. Neither image holds a port: `docker-compose.yml` gives them at start. Your log folder is mounted into both (read-only for the site), so the files stay on your system, and the logger refuses to start if it isn't on a mounted folder. The site can be down without the logger noticing.
 
@@ -93,15 +93,27 @@ Every port takes `POST /v1/<signal>` (`metrics`, `logs` or `traces`) and `GET /h
 
 **Adding a new tool** (say `mytool` on 4320) takes two lines in the `logger` service of `docker-compose.yml`, where the other tools are: a `ports` entry (`"127.0.0.1:${MYTOOL_PORT:-4320}:${MYTOOL_PORT:-4320}"`) and an entry in `OTEL_LOGGER_LISTEN` (`mytool:${MYTOOL_PORT:-4320}:${MYTOOL_PROTOCOL:-any}:${MYTOOL_DIR:-}`, with a comma after the entry before it), then the tool's own endpoint (section 4). Its folder, `~/otelscope/mytool/`, appears with the first request (a name is letters, digits, `-` and `_`; `other` is reserved), and its tab on the site after **Refresh**. Docker only publishes the ports a compose file lists, which is why a port is named there as well as in `OTEL_LOGGER_LISTEN`. A missing comma or a repeated port stops the logger with a message, rather than logging to a wrong place. All the logger's own settings are listed at the top of `otel-logger.py`.
 
+## Test it first
+
+`scripts/smoke-test.sh` sends a few clearly synthetic requests to every port of a running logger and checks the answers. Log files are append-only, so a synthetic record that reached your real logs could never be taken out again. The script therefore only runs against a logger whose log folder you have **marked as scratch** (a file called `.otelscope-scratch` in it), and it refuses a logger that forwards a copy of everything. Start a throwaway logger beside your own, with another project name and other ports so that it does not replace the real one:
+
+```bash
+mkdir -p ~/otelscope-scratch && touch ~/otelscope-scratch/.otelscope-scratch
+OTEL_LOGS_DIR="$HOME/otelscope-scratch" OTEL_LOGGER_FORWARD_URL= CLAUDE_PORT=14318 VSCODE_PORT=14316 OPENCODE_PORT=14317 \
+  docker compose -p otelscope-test up -d --build logger
+scripts/smoke-test.sh otelscope-test-logger-1
+docker compose -p otelscope-test down
+```
+
 ## Reading the logs
 
-`.pblog` files are binary, so `grep` and `jq` can't read them directly. `cat` (with `-T`, so Compose doesn't add a terminal to piped output) prints each record as the JSON lines the old logger wrote (`{"received_at": …, "data": …}`):
+`.pblog` files are binary, so `grep` and `jq` can't read them directly. `cat` (with `-T`, so Compose doesn't add a terminal to piped output) prints each record as a JSON line (`{"received_at": …, "data": …}`):
 
 ```bash
 docker compose run --rm -T tools cat /data/logs/claude/logs.pblog | jq -r '.data.resourceLogs[].scopeLogs[].logRecords[].body.stringValue' | sort | uniq -c | sort -rn
 ```
 
-Without Docker: `python3 otel-logger.py cat FILE | jq …` (after `pip install -r requirements.txt`). The recipes in `README-old.md` (section 4) work the same way: replace the file argument with a pipe from `cat`. `cat` skips damaged records and says how many.
+Without Docker: `python3 otel-logger.py cat FILE | jq …` (after `pip install -r requirements.txt`). `cat` skips damaged records and says how many.
 
 ## Tool settings
 

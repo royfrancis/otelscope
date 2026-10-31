@@ -24,7 +24,7 @@ COPY --chown=app:app tests/test_logger.py ./tests/
 COPY --chmod=0755 docker/logger-entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Safety net, on top of .dockerignore: the build fails if logs or secrets got into the image.
-RUN test -z "$(find /app \( -name '*.jsonl' -o -name '*.pblog' -o -name '.env*' \) -print)"
+RUN test -z "$(find /app \( -name '*.pblog' -o -name '.env*' \) -print)"
 
 # No ports here, on purpose: OTEL_LOGGER_LISTEN (which tool listens on which port, with which protocol and folder) is set
 # when the container starts, see docker-compose.yml.

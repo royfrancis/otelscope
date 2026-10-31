@@ -1,21 +1,8 @@
 // Reading the logger's files: the records of one signal of one folder, and OTLP values as plain JavaScript.
-import { createReadStream, existsSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import path from 'node:path'
-
-async function* readJsonl(file, mustInclude) {
-  if (!existsSync(file)) return
-  const lines = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity })
-  for await (const line of lines) {
-    if (!line || (mustInclude && !line.includes(mustInclude))) continue
-    try {
-      yield JSON.parse(line)
-    } catch {
-      // The logger appends live, so the last line can be half-written. Skip it.
-    }
-  }
-}
 
 // The logger writes protobuf (.pblog). Its own `cat` command prints those records as JSON lines ({"received_at", "data"}),
 // so it is run here rather than decoding protobuf a second time in JavaScript. It needs python3 with the protobuf
@@ -47,11 +34,10 @@ async function* readPblog(file, mustInclude) {
   }
 }
 
-/** The records of one signal (metrics, logs, traces): from <signal>.pblog if there is one, else from the old <signal>.jsonl. */
+/** The records of one signal (metrics, logs, traces) from <signal>.pblog; none if the folder has no such file. */
 export async function* readRecords(dir, signal, mustInclude) {
   const pblog = path.join(dir, `${signal}.pblog`)
   if (existsSync(pblog)) yield* readPblog(pblog, mustInclude)
-  else yield* readJsonl(path.join(dir, `${signal}.jsonl`), mustInclude)
 }
 
 export function otlpValue(v) {

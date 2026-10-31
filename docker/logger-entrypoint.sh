@@ -3,7 +3,6 @@
 #   logger    one OTLP port per entry of $OTEL_LOGGER_LISTEN, writing into $OTEL_LOGGER_DIR
 #   listeners print what $OTEL_LOGGER_LISTEN means: name, port, protocol, folder
 #   cat       print .pblog files as JSON lines:             cat /data/logs/claude/logs.pblog | jq ...
-#   convert   turn old .jsonl logs into .pblog files:        convert SRC DST [--dry-run]
 #   test      run the logger's Python tests (the site image runs those and the JavaScript ones)
 #   shell     a shell (python3 and jq are installed)
 # Anything else is run as a command, e.g.: docker run --rm <image> jq --version
@@ -26,9 +25,11 @@ need_env() { # NAME, an example
 
 listeners() { python3 otel-logger.py listeners; } # name, port, protocol, folder: tab separated
 
-# True if the folder, or one above it (other than /), is a mount point.
+# True if the folder, or one above it (other than /), is a mount point. The folder is resolved first: with a ".." or a
+# symlink in it, the folders above it as written are not the ones it is really in (python3, as realpath -m is not everywhere).
 is_mounted() {
-  local dir="$1"
+  local dir
+  dir="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1")" || return 1
   while [ -n "$dir" ] && [ "$dir" != / ]; do
     awk -v dir="$dir" '$5 == dir { found = 1 } END { exit !found }' "$MOUNTINFO" 2>/dev/null && return 0
     dir="$(dirname "$dir")"
@@ -72,7 +73,6 @@ case "$mode" in
     ;;
   listeners) exec python3 otel-logger.py listeners ;;
   cat) exec python3 otel-logger.py cat "$@" ;;
-  convert) exec python3 otel-logger.py convert "$@" ;;
   test) exec python3 -m unittest discover -s tests -p 'test_*.py' ;;
   health | healthcheck) health ;;
   shell) exec bash ;;

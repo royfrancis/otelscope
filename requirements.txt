@@ -1,4 +1,4 @@
-# Needed only for protobuf (JSON works without them). Exact versions, tested together by
-# tests/test_logger.py and scripts/check_parity.py. Both need Python 3.10 or newer.
+# Needed by otel-logger.py for every command, JSON requests included (they are stored as protobuf), and by the site
+# to read .pblog files. Exact versions, tested together by tests/test_logger.py. Both need Python 3.10 or newer.
 protobuf==7.36.2
 opentelemetry-proto==1.45.2
