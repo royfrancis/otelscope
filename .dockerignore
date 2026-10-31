@@ -1,0 +1,28 @@
+# Never in the image: secrets, generated data (every prompt, response, tool input and output, plus email and account ids), logs, and what the build recreates.
+# Both Dockerfiles also fail the build if any of this slips through.
+.env
+.env.*
+!.env.example
+
+docs/public/data
+docs/.vitepress/cache
+docs/.vitepress/dist
+node_modules
+
+**/*.jsonl
+**/*.pblog
+**/*.log
+otelscope*
+otel-logs*
+
+**/__pycache__
+**/*.pyc
+*.bak
+.git
+.claude
+.DS_Store
+**/.DS_Store
+README-old.md
+
+preview-1.webp
+preview-2.webp

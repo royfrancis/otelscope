@@ -1,0 +1,13 @@
+# Only the logger (no website).   docker compose -f docker-compose.logger.yml up -d --build
+#
+# The service is the one in docker-compose.yml, reused with `extends`, so the ports, protocols, folders and every
+# setting in .env (OTEL_LOGS_DIR, CLAUDE_PORT, ...) mean exactly what they mean there: change them in one place.
+# It has the same project name as docker-compose.yml on purpose, so the two files manage the same containers.
+# Never add --remove-orphans: it would remove the site if that was started from docker-compose.site.yml.
+name: otelscope
+
+services:
+  logger:
+    extends:
+      file: docker-compose.yml
+      service: logger

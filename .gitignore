@@ -1,0 +1,20 @@
+node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+
+# Generated from ~/otelscope: contains every prompt, response, tool input and output, plus email and account IDs. Never commit or publish.
+docs/public/data/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Logs are never part of the project
+*.pblog
+*.jsonl

@@ -1,0 +1,57 @@
+# otelscope site: the VitePress explorer. It only reads the logs.
+# docker compose up -d --build (or: docker build -f Dockerfile.site -t otelscope-site:local .)
+# The image holds code only. The logs are mounted (read-only) at /data/logs and never copied in.
+#
+# It carries Python too: the data step reads the .pblog files through the logger's own `cat` command
+# (otel-logger.py), which needs the protobuf libraries. It never listens for OTLP.
+
+# Stage 1: the Python libraries of that reader, installed into a plain folder.
+# Python minor version as Debian bookworm's python3, below.
+FROM python:3.11-slim-bookworm AS pylibs
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --target /pylibs -r /tmp/requirements.txt
+
+# Stage 2: the image that runs.
+FROM node:22-bookworm-slim
+
+# python3: the .pblog reader. tini: clean shutdown.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 tini ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=pylibs /pylibs /opt/pylibs
+ENV PYTHONPATH=/opt/pylibs
+
+# /app belongs to the unprivileged user, so the site can write its generated data and cache there.
+# /data/logs is where the log folder gets mounted.
+RUN mkdir -p /app /data/logs && chown node:node /app /data/logs
+WORKDIR /app
+USER node
+
+# Cleanup
+COPY --chown=node:node package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund \
+ && rm -rf node_modules/echarts/dist \
+ && node --input-type=module -e "for (const m of ['echarts/core', 'echarts/charts', 'echarts/components', 'echarts/renderers']) await import(m)" \
+ && npm cache clean --force
+
+COPY --chown=node:node otel-logger.py otel-record.proto vitest.config.mts ./
+COPY --chown=node:node scripts ./scripts
+COPY --chown=node:node docs ./docs
+COPY --chown=node:node tests ./tests
+COPY --chmod=0755 docker/site-entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Safety net, on top of .dockerignore: the build fails if generated data, logs or secrets got into the image.
+RUN test ! -e docs/public/data \
+ && test -z "$(find . -path ./node_modules -prune -o \( -name '*.jsonl' -o -name '*.pblog' -o -name '.env*' \) -print)"
+
+# No port here, on purpose: SITE_PORT is set when the container starts, see docker-compose.yml.
+# Inside the container the server listens on every interface; that is only safe because the port is published on
+# 127.0.0.1 only (docker run -p 127.0.0.1:...). Do not publish it any wider.
+ENV OTEL_LOGGER_DIR=/data/logs \
+    SITE_HOST=0.0.0.0
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
+  CMD ["/usr/local/bin/entrypoint.sh", "health"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["site"]

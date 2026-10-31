@@ -1,0 +1,1157 @@
+/* Shared styles for the Usage and Logs pages, and the navbar.
+   A calm dashboard: a tinted canvas, cards that lift off it, one accent (the blue of logo.svg), data colors that never change.
+   Colors are tokens; the dark values are their own validated steps, not a flip. VitePress toggles the `dark` class on <html>.
+   Text tokens are checked at 4.5:1 or more on the canvas, the card and the washes they sit on, in both themes
+   (ink-3 is the faintest: light #6b6964 is 4.9:1 on the canvas, dark #9b9992 is 6.7:1; the accent is 5.7:1 / 6.9:1).
+   Fonts are Manrope (text) and JetBrains Mono (numbers, times, ids), served from npm, never from a CDN. */
+
+/* ---- tokens outside the page: VitePress's own variables follow the site, so the navbar and the toast match ---- */
+:root {
+  --font-sans: 'Manrope Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --canvas: #f3f3ef;
+  --hairline: #e3e2dc;
+  --vp-font-family-base: var(--font-sans);
+  --vp-font-family-mono: var(--font-mono);
+  --vp-c-bg: var(--canvas);
+  --vp-c-bg-alt: #ecece7;
+  --vp-c-bg-elv: #fdfdfc;
+  --vp-c-divider: var(--hairline);
+  --vp-c-gutter: var(--hairline);
+  --vp-c-text-1: #0b0b0b;
+  --vp-c-text-2: #52514e;
+  --vp-c-text-3: #6b6964;
+  --vp-nav-bg-color: var(--canvas);
+  /* the accent of VitePress (links, the navbar's focus and hover colors) follows the logo too */
+  --vp-c-brand-1: #285fac;
+  --vp-c-brand-2: #1f4f93;
+  --vp-c-brand-3: #285fac;
+  --vp-c-brand-soft: rgba(40, 95, 172, 0.12);
+  /* the navbar sits outside .viz-root, so it has its own copies of what the tool tabs use: the track, the hover wash, the edge */
+  --nav-wash: rgba(11, 11, 11, 0.05);
+  --nav-wash-2: rgba(11, 11, 11, 0.08);
+  --nav-edge: rgba(11, 11, 11, 0.2);
+  --nav-on-brand: #ffffff; /* the label of a button filled with the accent */
+}
+.dark {
+  --canvas: #0f0f0e;
+  --hairline: #262624;
+  --nav-wash: rgba(255, 255, 255, 0.06);
+  --nav-wash-2: rgba(255, 255, 255, 0.1);
+  --nav-edge: rgba(255, 255, 255, 0.22);
+  --nav-on-brand: #0f0f0e; /* the dark theme's accent is a light blue, so its label is dark */
+  --vp-c-bg-alt: #151514;
+  --vp-c-bg-elv: #1a1a19;
+  --vp-c-text-1: #f0efec;
+  --vp-c-text-2: #c3c2b7;
+  --vp-c-text-3: #9b9992;
+  /* On the dark surface the logo's blue is too dim to read (about 2.6:1): dark uses a lighter step of the same hue. */
+  --vp-c-brand-1: #6b9ce6;
+  --vp-c-brand-2: #8bb2ee;
+  --vp-c-brand-3: #4f83d4;
+  --vp-c-brand-soft: rgba(107, 156, 230, 0.16);
+}
+/* the bar is the canvas, a little see-through, over a blur of what scrolls under it */
+@supports (color: color-mix(in srgb, red, blue)) {
+  :root {
+    --vp-nav-bg-color: color-mix(in srgb, var(--canvas) 80%, transparent);
+  }
+}
+
+/* ---- tokens of the pages ---- */
+.viz-root {
+  color-scheme: light;
+  --surface-1: #fdfdfc; /* the card; the chart also draws its 1px gaps between bars in this color */
+  --ink-1: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-3: #6b6964;
+  --grid: #e4e3dc;
+  --axis: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.09);
+  --border-strong: rgba(11, 11, 11, 0.2);
+  --wash: rgba(11, 11, 11, 0.05);
+  --wash-2: rgba(11, 11, 11, 0.08);
+  --zoom-fill: rgba(40, 95, 172, 0.15);
+  --accent: #285fac;
+  --accent-soft: rgba(40, 95, 172, 0.1);
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 8px 24px -8px rgba(11, 11, 11, 0.1);
+  --shadow-pop: 0 12px 32px rgba(11, 11, 11, 0.16);
+  --radius-card: 16px;
+  --radius-ctl: 10px;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #6250d6;
+  --series-8: #e34948;
+  --series-other: #898781;
+  --focus: var(--accent);
+}
+.dark .viz-root {
+  color-scheme: dark;
+  --surface-1: #1a1a19;
+  --ink-1: #f0efec;
+  --ink-2: #c3c2b7;
+  --ink-3: #9b9992;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.22);
+  --wash: rgba(255, 255, 255, 0.06);
+  --wash-2: rgba(255, 255, 255, 0.1);
+  --zoom-fill: rgba(107, 156, 230, 0.25);
+  --accent: #6b9ce6;
+  --accent-soft: rgba(107, 156, 230, 0.16);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.55);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+  --series-other: #898781;
+  --focus: var(--accent);
+}
+
+.viz-root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 28px 24px 80px;
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-1);
+}
+.viz-root h1 {
+  margin: 0 0 4px;
+  font-size: 28px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.viz-sub {
+  margin: 0 0 18px;
+  color: var(--ink-2);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.viz-sub code {
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-1);
+  background: var(--wash);
+  border-radius: 6px;
+}
+
+/* ---- controls: one toolbar above the content they scope ---- */
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px 22px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+  /* no overflow, filter or transform here: the calendar, the session list and the Columns menu open out of this row */
+}
+.viz-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.viz-field > legend,
+.viz-field > .viz-label {
+  padding: 0;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.viz-root :is(select, input, button, summary) {
+  text-transform: none;
+  letter-spacing: normal;
+}
+.viz-root select,
+.viz-root input[type='search'],
+.viz-btn {
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-1);
+  background-color: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+.viz-root select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  cursor: pointer;
+  /* the chevron is two small triangles in --ink-3, so it follows the theme */
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-3) 50%), linear-gradient(135deg, var(--ink-3) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+.viz-root select:hover,
+.viz-root input[type='search']:hover {
+  border-color: var(--border-strong);
+}
+.viz-root input[type='search'] {
+  width: 100%;
+  font-weight: 400;
+}
+.viz-btn {
+  cursor: pointer;
+}
+.viz-btn:hover:not(:disabled) {
+  background-color: var(--wash);
+  border-color: var(--border-strong);
+}
+.viz-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.viz-btn[aria-pressed='true'],
+.viz-btn[aria-current='page'] {
+  color: var(--accent);
+  background-color: var(--accent-soft);
+  border-color: var(--accent); /* the one in use is also bold, not marked by color alone */
+  font-weight: 700;
+}
+.viz-root :is(select, input, button, summary):focus-visible,
+.viz-root [tabindex]:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.viz-segment {
+  display: inline-flex;
+  flex-wrap: wrap; /* the time-range buttons wrap on a narrow screen instead of overflowing */
+  gap: 6px;
+}
+
+/* time range: the presets are one segmented control, the one in use raised, bold and outlined.
+   Direct children only: the calendar that opens from the last button has buttons of its own. */
+.viz-presets {
+  gap: 2px;
+  padding: 3px;
+  background: var(--wash);
+  border-radius: 12px;
+}
+.viz-presets > .viz-btn,
+.viz-presets > .viz-cal-anchor > .viz-cal-trigger {
+  height: 30px;
+  font-size: 13px;
+  color: var(--ink-2);
+  background-color: transparent;
+  border-color: transparent;
+  border-radius: 9px;
+}
+.viz-presets > .viz-btn {
+  padding: 0 11px;
+}
+.viz-presets > .viz-cal-anchor > .viz-cal-trigger {
+  width: 32px;
+  padding: 0; /* the icon is centered in the button, not squeezed by padding */
+}
+.viz-presets > .viz-btn:hover:not(:disabled):not([aria-pressed='true']),
+.viz-presets > .viz-cal-anchor > .viz-cal-trigger:hover:not(:disabled):not([aria-pressed='true']) {
+  color: var(--ink-1);
+  background-color: var(--wash-2);
+  border-color: transparent;
+}
+.viz-presets > .viz-btn[aria-pressed='true'],
+.viz-presets > .viz-cal-anchor > .viz-cal-trigger[aria-pressed='true'] {
+  color: var(--accent);
+  background-color: var(--surface-1);
+  border-color: var(--border-strong);
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+/* ---- session combobox ---- */
+.viz-session {
+  position: relative;
+  flex: 1 1 260px;
+  max-width: 420px;
+}
+.viz-session-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.viz-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 36px;
+  padding: 0 4px 0 12px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--ink-1);
+  background: var(--wash);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+}
+.viz-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viz-chip button {
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 16px;
+  cursor: pointer;
+}
+.viz-chip button:hover {
+  background: var(--wash-2);
+  color: var(--ink-1);
+}
+.viz-listbox {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px); /* just under the input row, whatever the label above it is */
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  /* it sits inside a .viz-field, whose small capitals are for the label only */
+  font-size: 14px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+.viz-option {
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.viz-option[aria-selected='true'],
+.viz-option:hover {
+  background: var(--wash);
+}
+.viz-option .first {
+  display: block;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viz-option .meta {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+.viz-none {
+  padding: 10px;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* ---- the chart: the summary strip is the card's header, joined to it ---- */
+/* the totals on the left, the window they cover on the right; plain text, the number is not set apart */
+.viz-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 24px;
+  margin: 0;
+  padding: 16px 22px 4px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--ink-2);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  box-shadow: var(--shadow);
+}
+.viz-summary-row p {
+  margin: 0;
+  font-size: inherit;
+}
+.viz-summary-row .viz-range-now {
+  margin-left: auto; /* stays on the right when the totals are hidden */
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.viz-card {
+  position: relative;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow);
+  padding: 12px 12px 6px;
+}
+.viz-summary-row + .viz-card {
+  padding-top: 4px;
+  border-top: 0;
+  border-radius: 0 0 var(--radius-card) var(--radius-card);
+}
+.viz-chart {
+  width: 100%;
+  height: clamp(340px, 58vh, 520px);
+}
+.viz-message {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  font-size: 14px;
+  color: var(--ink-2);
+  pointer-events: none;
+}
+.viz-hint.is-error {
+  color: var(--ink-1); /* told in words and weight, not color alone */
+  font-weight: 700;
+}
+.viz-message.is-error {
+  pointer-events: auto;
+}
+.viz-message code {
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background: var(--wash);
+  border-radius: 6px;
+}
+.viz-hint {
+  margin: 10px 4px 0;
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+/* tooltip: values lead, names follow; rows are keyed with a short stroke, not a box */
+.viz-tip {
+  min-width: 190px;
+  max-width: 340px;
+  padding: 12px 14px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+.viz-tip-head {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.viz-tip-row {
+  display: grid;
+  grid-template-columns: 14px auto 1fr;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+.viz-tip-row.is-hovered .viz-tip-name {
+  color: var(--ink-1);
+  font-weight: 600;
+}
+.viz-tip-key {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+}
+.viz-tip-val {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+}
+.viz-tip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the hovered segment's models, indented under its name */
+.viz-tip-models {
+  margin: 1px 0 5px 22px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  color: var(--ink-2);
+}
+.viz-tip-models > .viz-tip-caption {
+  margin-right: 8px;
+  color: var(--ink-3);
+}
+.viz-tip-model-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+}
+.viz-tip-model-row .viz-tip-val {
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.viz-tip-total {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--ink-2);
+}
+.viz-tip-total strong {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- tables ---- */
+.viz-details {
+  margin-top: 16px;
+}
+.viz-details > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-1);
+  list-style: none;
+  cursor: pointer;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.viz-details > summary::-webkit-details-marker {
+  display: none;
+}
+.viz-details > summary::before {
+  content: '▸';
+  color: var(--ink-3);
+  transition: transform 0.15s;
+}
+.viz-details[open] > summary::before {
+  transform: rotate(90deg);
+}
+.viz-details > summary:hover {
+  background: var(--wash);
+  border-color: var(--border-strong);
+}
+.viz-table-wrap {
+  overflow: auto;
+  max-height: 480px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface-1);
+  box-shadow: var(--shadow);
+}
+.viz-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.viz-table th,
+.viz-table td {
+  padding: 10px 14px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--grid);
+}
+/* the header stays at the top of the scroll area: the wash is laid over the opaque card color so rows never show through */
+.viz-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--surface-1);
+  background-image: linear-gradient(var(--wash), var(--wash));
+  color: var(--ink-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--axis);
+}
+.viz-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.viz-table tbody tr:hover :is(td, th) {
+  background: var(--wash);
+}
+/* the time of a row of the usage table */
+.viz-table tbody th[scope='row'] {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+/* the total row stays at the bottom of the scroll area, like the header stays at the top */
+.viz-table tfoot th,
+.viz-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  background-color: var(--surface-1);
+  background-image: linear-gradient(var(--wash), var(--wash));
+  color: var(--ink-1);
+  font-weight: 700;
+  border-bottom: 0;
+  box-shadow: inset 0 1px 0 var(--axis);
+}
+.viz-table .num {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.viz-table .mono {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.viz-table .nowrap {
+  white-space: nowrap;
+}
+.viz-table .wide {
+  min-width: 360px;
+  max-width: 720px;
+}
+.viz-table .empty {
+  padding: 28px;
+  text-align: center;
+  color: var(--ink-2);
+}
+.cell-toggle {
+  display: block;
+  width: 100%;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.cell-text {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.cell-text.is-clamped {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.cell-more {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+
+/* ---- log explorer controls ---- */
+.viz-search {
+  flex: 1 1 320px;
+  max-width: 520px;
+}
+.viz-columns {
+  position: relative;
+}
+.viz-columns > summary {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 14px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-1);
+  list-style: none;
+  cursor: pointer;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  transition: background-color 0.15s, border-color 0.15s;
+}
+.viz-columns > summary:hover {
+  background: var(--wash);
+  border-color: var(--border-strong);
+}
+.viz-columns > summary::-webkit-details-marker {
+  display: none;
+}
+.viz-columns > summary::after {
+  content: '▾';
+  margin-left: 8px;
+  color: var(--ink-3);
+}
+.viz-menu {
+  position: absolute;
+  z-index: 20;
+  top: 40px;
+  right: 0;
+  width: 300px;
+  padding: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+.viz-menu-list {
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.viz-menu-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  font-size: 13px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.viz-menu-list label:hover {
+  background: var(--wash);
+}
+.viz-menu-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.viz-pager {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+}
+.viz-pager .viz-btn {
+  min-width: 36px;
+}
+.viz-status {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+/* ---- tabs: one per tool folder, as a segmented control; the one showing is raised, bold and outlined ---- */
+.viz-tabbar {
+  padding-bottom: 0;
+}
+.viz-tabbar + .viz-root {
+  padding-top: 18px;
+}
+.viz-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 100%;
+  padding: 3px;
+  background: var(--wash);
+  border-radius: 12px;
+}
+.viz-tab {
+  height: 34px;
+  padding: 0 16px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.viz-tab:hover:not([aria-selected='true']) {
+  color: var(--ink-1);
+  background: var(--wash-2);
+}
+.viz-tab[aria-selected='true'] {
+  color: var(--accent);
+  font-weight: 800;
+  background: var(--surface-1);
+  border-color: var(--border-strong); /* the selected tab is marked by weight and an outline, not by color alone */
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+.viz-root :is(.viz-tab):focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+/* ---- navbar: the name, and Usage, Logs and Refresh (outside .viz-root, so these use VitePress's own colors) ---- */
+/* The blur sits on a layer of its own, not on the bar: a filter on the bar would make it the containing block of the
+   toast below, which is position: fixed. */
+.VPNavBar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  backdrop-filter: saturate(160%) blur(14px);
+  -webkit-backdrop-filter: saturate(160%) blur(14px);
+}
+/* The name: "otel" bold, "scope" medium (VitePress sets the whole title to 600, so that is set again). */
+.VPNavBar .VPNavBarTitle .title {
+  font-size: 18px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+.VPNavBar .VPNavBarTitle .title b {
+  font-weight: 800;
+}
+/* This site has no search, but VitePress still renders its (empty) box, and that box grows to fill the bar: it pushed
+   everything in front of it to the left. Hidden, the buttons sit at the right, next to the dark-mode switch. */
+.VPNavBar .VPNavBarSearch {
+  display: none;
+}
+/* the bar and the page share one width, so the buttons end where the content does */
+@media (min-width: 768px) {
+  .VPNavBar:not(.has-sidebar) .wrapper {
+    padding: 0 24px;
+  }
+  .VPNavBar:not(.has-sidebar) .container {
+    max-width: 1232px; /* .viz-root is 1280 wide with 24px of padding */
+  }
+}
+.otel-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px; /* the views are one group; Refresh, an action, stands a little apart */
+  margin-right: 8px;
+}
+/* Usage and Logs are a segmented control, like the tool tabs: a faint track, and the view that is showing is raised,
+   outlined and blue. */
+.otel-nav-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  background: var(--nav-wash);
+  border-radius: 12px;
+}
+.otel-nav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600; /* the same weight in every state, so a button never changes width when it is chosen */
+  color: var(--vp-c-text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s, border-color 0.15s;
+}
+.otel-nav-btn:hover:not(:disabled):not([aria-current='page']) {
+  color: var(--vp-c-text-1);
+  background: var(--nav-wash-2);
+}
+.otel-nav-btn:focus-visible {
+  outline: 2px solid var(--vp-c-brand-1);
+  outline-offset: 2px;
+}
+.otel-nav-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+/* the view that is showing: label and icon in the accent, on a raised light surface with an outline (so it is not
+   marked by hue alone) */
+.otel-nav-btn[aria-current='page'] {
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-elv);
+  border-color: var(--nav-edge);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+/* Refresh is an action, not a view: a button filled with the accent, as tall as the track beside it */
+.otel-nav-btn.is-refresh {
+  height: 34px;
+  color: var(--nav-on-brand);
+  background: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
+  border-radius: 12px;
+}
+.otel-nav-btn.is-refresh:hover:not(:disabled) {
+  background: var(--vp-c-brand-2);
+  border-color: var(--vp-c-brand-2);
+}
+.otel-nav-btn.is-refresh:disabled {
+  opacity: 0.7; /* it is busy reading the logs, not unavailable */
+}
+.otel-icon {
+  flex: none;
+}
+.otel-icon.is-spinning {
+  animation: otel-spin 0.9s linear infinite;
+}
+@keyframes otel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* what Refresh says, under the bar */
+.otel-toast {
+  position: fixed;
+  top: calc(var(--vp-nav-height) + 8px);
+  right: 16px;
+  z-index: 60;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--vp-c-text-1);
+  white-space: normal;
+  background: var(--vp-c-bg-elv);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  box-shadow: var(--vp-shadow-3);
+}
+.otel-toast.is-error {
+  font-weight: 700; /* a failure is told in words and weight, not color alone */
+  border-color: var(--vp-c-text-2);
+}
+.otel-toast-close {
+  display: inline-flex;
+  padding: 2px;
+  color: var(--vp-c-text-2);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.otel-toast-close:hover {
+  color: var(--vp-c-text-1);
+}
+
+/* ---- time range: the calendar that opens from the calendar button ---- */
+.viz-cal-anchor {
+  position: relative;
+  display: inline-flex;
+}
+.viz-cal-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+}
+.viz-cal {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  box-sizing: border-box;
+  width: 304px;
+  max-width: calc(100vw - 32px);
+  padding: 14px;
+  color: var(--ink-1);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-pop);
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.viz-cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.viz-cal-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+.viz-cal .viz-cal-nav {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.viz-cal-grid {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.viz-cal-grid th {
+  padding: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.viz-cal-grid td {
+  padding: 1px 0;
+  text-align: center;
+}
+.viz-cal-day {
+  width: 100%;
+  height: 32px;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-1);
+  font-variant-numeric: tabular-nums;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.viz-cal-day:hover:not(:disabled) {
+  background: var(--wash-2);
+}
+.viz-cal-day:disabled {
+  color: var(--ink-3);
+  opacity: 0.4;
+  cursor: default;
+}
+.viz-cal-day.is-out {
+  color: var(--ink-3);
+}
+.viz-cal-day.is-today {
+  border-color: var(--ink-3);
+}
+.viz-cal-day.in-range {
+  background: var(--zoom-fill);
+  border-radius: 0;
+}
+/* the two ends of the range are bold and boxed, so they are not told apart from the days between by color alone */
+.viz-cal-day.is-from,
+.viz-cal-day.is-to {
+  font-weight: 800;
+  background: var(--zoom-fill);
+  border: 2px solid var(--focus);
+}
+.viz-cal-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.viz-cal-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.viz-cal .viz-btn {
+  height: 30px;
+  padding: 0 11px;
+  font-size: 13px;
+}
+.viz-cal-apply {
+  font-weight: 700;
+}
+
+/* ---- a narrow screen ---- */
+@media (max-width: 640px) {
+  .viz-root {
+    padding: 18px 14px 56px;
+  }
+  .viz-controls {
+    gap: 12px;
+    padding: 12px;
+  }
+  .viz-session,
+  .viz-search {
+    flex-basis: 100%;
+    max-width: none;
+  }
+  .viz-summary-row {
+    padding: 14px 16px 2px;
+  }
+  .viz-summary-row .viz-range-now {
+    margin-left: 0;
+    text-align: left;
+  }
+  .otel-nav-label {
+    position: absolute; /* icon only on a narrow screen; the word stays for screen readers */
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .otel-nav-btn {
+    padding: 0 9px;
+  }
+  .viz-cal {
+    right: auto;
+    left: 0;
+  }
+}
+
+/* ---- motion: colors ease, the refresh icon spins; for someone who asks for less, they just change ---- */
+@media (prefers-reduced-motion: reduce) {
+  .viz-root *,
+  .otel-nav-btn,
+  .viz-tab {
+    transition: none !important;
+  }
+  .otel-icon.is-spinning {
+    animation: none;
+    opacity: 0.5;
+  }
+}

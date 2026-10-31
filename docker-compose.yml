@@ -1,0 +1,95 @@
+# The logger and the explorer site, two images (Dockerfile.logger, Dockerfile.site).   docker compose up -d --build
+#
+# Your logs live on your system, in OTEL_LOGS_DIR (default ~/otelscope), and are mounted in: they are never in the image.
+# The receiver that gets a copy of everything (OTEL_LOGGER_FORWARD_URL) is a separate project and is not started from here.
+#
+# Which tool listens on which port, with which protocol, and where it writes, is decided here (and in .env), not in
+# the images: the Dockerfiles have no ports. To add a tool, add two lines (marked below): its entry in
+# OTEL_LOGGER_LISTEN (every entry but the last ends in a comma) and its port under ports:.
+#
+# Settings can go in a git-ignored .env next to this file (the values shown are the defaults):
+#   OTEL_LOGS_DIR=/some/other/folder        where the logs are (must already exist)
+#   CLAUDE_PORT=4318  CLAUDE_PROTOCOL=any   Claude Code's port, and what it accepts: any, protobuf or json
+#   VSCODE_PORT=4316  VSCODE_PROTOCOL=any   VS Code Copilot Chat
+#   OPENCODE_PORT=4317  OPENCODE_PROTOCOL=any   OpenCode (4317 is the usual OTLP/gRPC port; this logger speaks HTTP only)
+#   CLAUDE_DIR=  VSCODE_DIR=  OPENCODE_DIR=     a folder other than <logs>/<tool> (a path inside the container: mount it too)
+#   SITE_PORT=5174                          the site's port
+#   OTEL_LOGGER_FORWARD_URL=...             where everything is also sent on (OTLP/HTTP). The default is a receiver on your
+#                                           System port 5080; set it empty (OTEL_LOGGER_FORWARD_URL=) to turn the copy off
+#   OTEL_LOGGER_FORWARD_HEADERS=...         headers for that, as name=value,name=value (the default receiver needs none)
+name: otelscope
+
+x-hardening: &hardening
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  logger:
+    <<: *hardening
+    restart: unless-stopped # the logger must always run: it comes back after a reboot or a Docker restart, unless you stopped it yourself
+    build:
+      context: .
+      dockerfile: Dockerfile.logger
+    image: otelscope-logger:local
+    command: ["logger"]
+    ports:
+      # 127.0.0.1 only: the logger takes prompts and responses from your tools, and must not face the network.
+      # The same number inside and outside, so what you set in a tool is what the logger listens on.
+      - "127.0.0.1:${CLAUDE_PORT:-4318}:${CLAUDE_PORT:-4318}" # <- one line per tool
+      - "127.0.0.1:${VSCODE_PORT:-4316}:${VSCODE_PORT:-4316}"
+      - "127.0.0.1:${OPENCODE_PORT:-4317}:${OPENCODE_PORT:-4317}"
+    environment:
+      # NAME:PORT:PROTOCOL:FOLDER, one per tool. NAME is the tool and the default folder; an empty FOLDER means <logs>/<NAME>.
+      OTEL_LOGGER_LISTEN: >-
+        claude:${CLAUDE_PORT:-4318}:${CLAUDE_PROTOCOL:-any}:${CLAUDE_DIR:-},
+        vscode:${VSCODE_PORT:-4316}:${VSCODE_PROTOCOL:-any}:${VSCODE_DIR:-},
+        opencode:${OPENCODE_PORT:-4317}:${OPENCODE_PROTOCOL:-any}:${OPENCODE_DIR:-}
+      # A copy of every request goes on to a receiver on your system, port 5080 (the logger adds /v1/<signal>). In the container
+      # 127.0.0.1 is the container itself, so your system is host.docker.internal. "-" and not ":-" on purpose: an empty value in
+      # .env turns the copy off. Never a port listed above: that would loop (the logger refuses).
+      OTEL_LOGGER_FORWARD_URL: ${OTEL_LOGGER_FORWARD_URL-http://host.docker.internal:5080}
+      OTEL_LOGGER_FORWARD_HEADERS: ${OTEL_LOGGER_FORWARD_HEADERS:-}
+    volumes:
+      - type: bind
+        source: ${OTEL_LOGS_DIR:-${HOME}/otelscope}
+        target: /data/logs
+        bind:
+          create_host_path: false # a wrong path is an error, not a new empty folder that quietly collects the logs
+
+  site:
+    <<: *hardening
+    restart: "no"
+    build:
+      context: .
+      dockerfile: Dockerfile.site
+    image: otelscope-site:local
+    command: ["site"]
+    ports:
+      - "127.0.0.1:${SITE_PORT:-5174}:${SITE_PORT:-5174}"
+    environment:
+      SITE_PORT: ${SITE_PORT:-5174}
+    volumes:
+      - type: bind
+        source: ${OTEL_LOGS_DIR:-${HOME}/otelscope}
+        target: /data/logs
+        read_only: true # the site only reads
+        bind:
+          create_host_path: false
+
+  # For one-off commands, never started by `up` (it uses the logger's image, so `docker compose build` first):
+  #   docker compose run --rm -T tools cat /data/logs/claude/logs.pblog | jq .
+  #   docker compose exec logger entrypoint.sh listeners      (what the running logger listens on)
+  tools:
+    <<: *hardening
+    restart: "no"
+    image: otelscope-logger:local
+    pull_policy: never # it is built by the logger service above
+    profiles: ["tools"]
+    command: ["shell"]
+    volumes:
+      - type: bind
+        source: ${OTEL_LOGS_DIR:-${HOME}/otelscope}
+        target: /data/logs
+        read_only: true
+        bind:
+          create_host_path: false

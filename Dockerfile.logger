@@ -1,0 +1,42 @@
+# otelscope logger: receives the tools' OTLP/HTTP and appends it to protobuf log files. Python only, no Node.
+# docker compose up -d --build (or: docker build -f Dockerfile.logger -t otelscope-logger:local .)
+# The image holds code only. The logs are mounted at /data/logs and never copied in.
+FROM python:3.11-slim-bookworm
+
+# tini: clean shutdown. jq: for querying the logs from `docker compose run tools shell`.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends tini jq \
+ && rm -rf /var/lib/apt/lists/*
+
+# Exact versions, tested together by tests/test_logger.py.
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm /tmp/requirements.txt
+
+# /app belongs to an unprivileged user. /data/logs is where the log folder gets mounted.
+RUN groupadd --gid 1000 app \
+ && useradd --uid 1000 --gid 1000 --no-create-home --shell /usr/sbin/nologin app \
+ && mkdir -p /app/tests /data/logs \
+ && chown app:app /app /app/tests /data/logs
+WORKDIR /app
+
+COPY --chown=app:app otel-logger.py otel-record.proto ./
+COPY --chown=app:app tests/test_logger.py ./tests/
+COPY --chmod=0755 docker/logger-entrypoint.sh /usr/local/bin/entrypoint.sh
+
+# Safety net, on top of .dockerignore: the build fails if logs or secrets got into the image.
+RUN test -z "$(find /app \( -name '*.jsonl' -o -name '*.pblog' -o -name '.env*' \) -print)"
+
+# No ports here, on purpose: OTEL_LOGGER_LISTEN (which tool listens on which port, with which protocol and folder) is set
+# when the container starts, see docker-compose.yml.
+# Inside the container the servers listen on every interface; that is only safe because the ports are published on
+# 127.0.0.1 only (docker run -p 127.0.0.1:...). Do not publish them any wider.
+ENV OTEL_LOGGER_DIR=/data/logs \
+    OTEL_LOGGER_HOST=0.0.0.0
+
+USER app
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD ["/usr/local/bin/entrypoint.sh", "health"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+CMD ["logger"]

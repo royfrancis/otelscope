@@ -1,0 +1,22 @@
+// The record stored in a .pblog file by otel-logger.py. This file documents the format; nothing needs it to run.
+//
+// A .pblog file is a series of records, each appended in one write:
+//
+//   4 bytes  the marker "OTLP"        a reader uses it to find the next record again after damage
+//   4 bytes  body length              big-endian
+//   4 bytes  CRC32 of the body        big-endian
+//   n bytes  body                     a Record, below
+//
+// There is no file header, so two files can be concatenated into a valid file.
+// To look inside one record's body without the logger:  protoc --decode_raw  (or --decode=Record with this file).
+syntax = "proto3";
+
+message Record {
+  // When the logger received the request: nanoseconds since the Unix epoch, UTC.
+  fixed64 received_at = 1;
+
+  // The OTLP request exactly as the tool sent it: an ExportMetricsServiceRequest, ExportLogsServiceRequest or
+  // ExportTraceServiceRequest (opentelemetry/proto/collector/*/v1), chosen by the file's name
+  // (metrics.pblog, logs.pblog, traces.pblog).
+  bytes payload = 2;
+}
