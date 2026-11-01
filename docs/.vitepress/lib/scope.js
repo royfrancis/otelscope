@@ -86,6 +86,14 @@ export function createScope({ fetchSources, refresh, address = browserAddress(),
     return () => reloaders.delete(reload)
   }
 
+  // What each view was showing when it was left, so coming back finds it as it was. Kept in memory for as long as the page is open
+  // (a reload starts clean), and per tool and view: a measure, a session or a kind of event belongs to one tool's data.
+  const memory = new Map()
+  const remember = (tool, view, state) => {
+    memory.set(`${tool}/${view}`, state)
+  }
+  const recall = (tool, view) => memory.get(`${tool}/${view}`) ?? null
+
   let noteTimer = null
   function say(text, isFailure) {
     clearTimer(noteTimer)
@@ -113,5 +121,5 @@ export function createScope({ fetchSources, refresh, address = browserAddress(),
     }
   }
 
-  return { status, errorMessage, sources, tool, view, current, views, refreshing, note, failed, choose, start, register, loadSources, refresh: refreshAll, dismiss }
+  return { status, errorMessage, sources, tool, view, current, views, refreshing, note, failed, choose, start, register, remember, recall, loadSources, refresh: refreshAll, dismiss }
 }

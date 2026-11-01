@@ -2,9 +2,10 @@
 import { computed } from 'vue'
 import { VIEW_LABELS } from '../lib/tabs.js'
 import { useScope } from '../lib/scope.js'
+import { VERSION } from '../lib/version.js'
 import Icon from './Icon.vue'
 
-// The navbar: Usage, Logs and Refresh, each an icon and a word, in that order from the left.
+// The navbar: the version, then Usage, Logs and Refresh (each an icon and a word), in that order from the left.
 // Usage and Logs choose the view of the tool that is showing; Refresh re-reads every tool's logs (see lib/scope.js).
 const scope = useScope()
 
@@ -17,6 +18,7 @@ const choose = (v) => scope.choose(scope.tool.value, v)
 
 <template>
   <div class="otel-nav">
+    <span class="otel-nav-version" title="otelscope version">v{{ VERSION }}</span>
     <nav class="otel-nav-group" aria-label="Views">
       <button
         v-for="v in shown"

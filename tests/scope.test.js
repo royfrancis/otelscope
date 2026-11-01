@@ -217,3 +217,31 @@ test('a success note goes away by itself; a failure stays until dismissed or the
   assert.equal(scope.failed.value, false)
   assert.equal(scope.note.value, 'Data refreshed.')
 })
+
+test('what a view was showing is remembered per tool and view, for as long as this scope lives', () => {
+  const { scope } = makeScope()
+  assert.equal(scope.recall('claude', 'usage'), null)
+
+  scope.remember('claude', 'usage', { measureKey: 'a' })
+  scope.remember('claude', 'logs', { query: 'b' })
+  scope.remember('vscode', 'usage', { measureKey: 'c' })
+  assert.deepEqual(scope.recall('claude', 'usage'), { measureKey: 'a' })
+  assert.deepEqual(scope.recall('claude', 'logs'), { query: 'b' })
+  assert.deepEqual(scope.recall('vscode', 'usage'), { measureKey: 'c' })
+  assert.equal(scope.recall('vscode', 'logs'), null) // nothing was left there
+
+  scope.remember('claude', 'usage', { measureKey: 'd' })
+  assert.deepEqual(scope.recall('claude', 'usage'), { measureKey: 'd' }) // the last visit is the one that counts
+
+  assert.equal(makeScope().scope.recall('claude', 'usage'), null) // another scope (a reload of the page) starts clean
+})
+
+test('a refresh keeps what was remembered, and a choice of tab or view does not touch it', async () => {
+  const { scope } = makeScope()
+  await scope.start()
+  scope.remember('claude', 'logs', { query: 'needle' })
+  scope.choose('vscode', 'usage')
+  scope.choose('claude', 'logs')
+  await scope.refresh()
+  assert.deepEqual(scope.recall('claude', 'logs'), { query: 'needle' })
+})

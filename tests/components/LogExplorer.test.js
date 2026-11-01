@@ -423,3 +423,93 @@ describe('refresh data', () => {
     expect(status()).toContain('of 130 events')
   })
 })
+
+describe('coming back to the logs', () => {
+  // The scope is the page's: a second mount on it finds what the first left, as a switch to Usage and back does.
+  let scope
+  async function openOn(files = logsFiles('claude'), props = {}) {
+    vi.stubGlobal('fetch', serverWith(files).fetch)
+    wrapper = mount(LogExplorer, { attachTo: document.body, props, ...provideScope(scope) })
+    for (let i = 0; i < 4; i++) await flushPromises()
+  }
+  const leaveAndReturn = async (files, props) => {
+    wrapper.unmount()
+    await openOn(files, props)
+  }
+  const box = (name) => wrapper.findAll('.viz-menu-list label').find((l) => l.text() === name).find('input')
+
+  beforeEach(() => {
+    scope = makeScope()
+  })
+
+  it('shows the kind, the search and the columns that were left', async () => {
+    await openOn()
+    await eventSelect().setValue('e2')
+    await flushPromises()
+    await wrapper.find('#log-search').setValue('gpt-b')
+    await box('duration_ms').setValue(false)
+    await leaveAndReturn()
+    expect(eventSelect().element.value).toBe('e2')
+    expect(wrapper.find('#log-search').element.value).toBe('gpt-b')
+    expect(headers()).toEqual(['Date / time', 'session.id', 'model', 'input_tokens', 'output_tokens'])
+    expect(wrapper.text()).toContain('of 1 event')
+  })
+
+  it('shows the page that was left, with the search that goes with it', async () => {
+    await openOn()
+    await wrapper.find('#log-search').setValue('Prompt number')
+    await box('app.version').setValue(true)
+    await pageButtons()[2].trigger('click') // page 3
+    expect(currentPage()).toBe('3')
+    await leaveAndReturn()
+    expect(wrapper.find('#log-search').element.value).toBe('Prompt number')
+    expect(headers()).toEqual(['Date / time', 'session.id', 'prompt', 'app.version'])
+    expect(currentPage()).toBe('3') // the search is put back first, so it does not send the table to page 1
+    expect(pageLabels()).toEqual(['1', '2', '3', '4', '5'])
+  })
+
+  it('never shows a page past the last one the rows now have', async () => {
+    await openOn()
+    await pageButtons()[4].trigger('click') // page 5 of 7
+    expect(currentPage()).toBe('5')
+    await leaveAndReturn(logsFiles('claude', 30)) // 30 rows: 2 pages
+    expect(currentPage()).toBe('2')
+  })
+
+  it('opens on the default kind, with a clean search, when the kind that was left is gone', async () => {
+    await openOn()
+    await eventSelect().setValue('e2')
+    await flushPromises()
+    await wrapper.find('#log-search').setValue('gpt')
+    const files = logsFiles('claude')
+    files[INDEX] = { ...files[INDEX], events: files[INDEX].events.filter((e) => e.id !== 'e2') }
+    await leaveAndReturn(files)
+    expect(eventSelect().element.value).toBe('e1')
+    expect(wrapper.find('#log-search').element.value).toBe('')
+    expect(headers()).toEqual(['Date / time', 'session.id', 'prompt'])
+    expect(currentPage()).toBe('1')
+  })
+
+  it('is per tool: another tool\'s tab starts on its own default, and this one is still remembered', async () => {
+    await openOn()
+    await eventSelect().setValue('e2')
+    await flushPromises()
+    await leaveAndReturn(logsFiles('vscode', 4), { source: 'vscode', label: 'VS Code Copilot' })
+    expect(eventSelect().element.value).toBe('e1')
+    await leaveAndReturn()
+    expect(eventSelect().element.value).toBe('e2')
+  })
+
+  it('does not lose what was saved when a later visit never got as far as showing rows', async () => {
+    await openOn()
+    await eventSelect().setValue('e2')
+    await flushPromises()
+    wrapper.unmount()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, statusText: 'S404', json: async () => { throw new Error('no body') } })))
+    wrapper = mount(LogExplorer, { attachTo: document.body, ...provideScope(scope) })
+    for (let i = 0; i < 4; i++) await flushPromises()
+    expect(wrapper.text()).toContain('Could not load')
+    await leaveAndReturn()
+    expect(eventSelect().element.value).toBe('e2')
+  })
+})

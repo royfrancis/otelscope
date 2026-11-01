@@ -17,16 +17,19 @@ const LONG_TEXT = 140
 const SAMPLE = 100 // rows looked at to tell what a column holds
 
 // ---- state ----------------------------------------------------------------------------------
+// What this tab showed when it was last left, if it was (see remember/recall in lib/scope.js). The search and the page are set
+// here, not once the rows are read: a change of `query` later would send the pager back to page 1 (the watcher below).
+const saved = scope.recall(props.source, 'logs')
 const status = ref('loading') // loading | ready | error
 const errorMessage = ref('')
 const choiceError = ref('') // why the kind just picked could not be shown (the table keeps showing the one before)
 const index = shallowRef(null) // { events: [{ id, kind, name, count }], default }
 const eventId = ref('') // the kind being shown
 const data = shallowRef(null) // that kind's file: { kind, name, fields, defaultColumns, searchFields, rows }
-const query = ref('')
+const query = ref(saved?.query ?? '')
 const columns = ref([])
 const columnFilter = ref('')
-const pager = ref({ page: 1, loaded: INITIAL_PAGES })
+const pager = ref(saved ? { ...saved.pager } : { page: 1, loaded: INITIAL_PAGES })
 const expanded = ref(new Set()) // "rowIndex|column" keys of expanded long cells
 const columnsEl = ref(null)
 
@@ -159,11 +162,21 @@ onMounted(async () => {
   document.addEventListener('keydown', closeColumnsOnEscape)
   unregister = scope.register(reload) // whether or not the first load works, so Refresh can recover it
   try {
-    const { next, wanted, file } = await fetchLogs('')
+    const { next, wanted, file } = await fetchLogs(saved?.eventId ?? '')
     index.value = next
     eventId.value = wanted
     data.value = file
-    resetColumns() // this kind's own default columns
+    if (saved && wanted === saved.eventId) {
+      // the kind it was left on is still there: the columns that are still in it, and the page (never past the last)
+      const kept = saved.columns.filter((c) => file.fields.includes(c))
+      if (kept.length || !saved.columns.length) columns.value = kept
+      else resetColumns()
+      pager.value = { ...pager.value, page: Math.min(pager.value.page, Math.max(1, pageCount.value)) }
+    } else {
+      query.value = '' // a kind that is gone, or a first visit: a fresh search and this kind's own default columns
+      pager.value = { page: 1, loaded: INITIAL_PAGES }
+      resetColumns()
+    }
     status.value = 'ready'
   } catch (err) {
     errorMessage.value = String(err.message ?? err)
@@ -194,6 +207,10 @@ async function reload() {
   }
 }
 onBeforeUnmount(() => {
+  // Only rows that were shown are worth coming back to; a view that never loaded must not replace what was saved before it.
+  if (status.value === 'ready' && data.value) {
+    scope.remember(props.source, 'logs', { eventId: eventId.value, query: query.value, columns: [...columns.value], pager: { ...pager.value } })
+  }
   unregister()
   document.removeEventListener('click', closeColumnsOutside)
   document.removeEventListener('keydown', closeColumnsOnEscape)

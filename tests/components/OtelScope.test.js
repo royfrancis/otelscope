@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import OtelScope from '../../docs/.vitepress/components/OtelScope.vue'
+import { VERSION } from '../../docs/.vitepress/lib/version.js'
 import { logsFiles, makeOtherUsage, makeScope, makeUsage, mountWithNav } from './fixtures.js'
 
 // A recording stand-in for the ECharts instance, as in UsageChart.test.js: these tests are about the page, not the drawing.
@@ -221,6 +222,15 @@ describe('the navbar', () => {
     expect(navButtons().every((b) => b.find('svg').attributes('aria-hidden') === 'true')).toBe(true) // the word names the button
   })
 
+  it('shows the version to the left of Usage and Logs, and it is not a button', async () => {
+    await open(makeSite(standardFiles()))
+    const [first, second] = wrapper.find('.otel-nav').element.children
+    expect(first.classList.contains('otel-nav-version')).toBe(true)
+    expect(first.textContent).toBe(`v${VERSION}`)
+    expect(second.classList.contains('otel-nav-group')).toBe(true)
+    expect(navButtons().map((b) => b.text())).toEqual(['Usage', 'Logs', 'Refresh']) // still just the three
+  })
+
   it('marks the view that is showing, and moves the mark when another is chosen', async () => {
     await open(makeSite(standardFiles()))
     const current = () => navButtons().filter((b) => b.attributes('aria-current') === 'page').map((b) => b.text())
@@ -270,5 +280,58 @@ describe('the navbar', () => {
     await refreshButton().trigger('click')
     await settle()
     expect(wrapper.find('#log-search').element.value).toBe('number 1')
+  })
+})
+
+describe('OtelScope remembers what was chosen', () => {
+  const COST = 'claude_code.cost.usage'
+  const COUNT = 'gen_ai.client.token.usage#count'
+  const pickSession = async (query) => {
+    await wrapper.find('#session-search').setValue(query)
+    await wrapper.find('.viz-option').trigger('mousedown')
+  }
+
+  it('keeps the Usage controls through a visit to Logs, and the Logs controls through a visit to Usage', async () => {
+    await open(makeSite(standardFiles()))
+    await select('Y-axis').setValue(COST)
+    await pickSession('beta')
+    await clickView('Logs')
+    await wrapper.find('#log-search').setValue('number 1')
+    await clickView('Usage')
+    expect(select('Y-axis').element.value).toBe(COST)
+    expect(wrapper.find('.viz-chip').text()).toContain('beta')
+    await clickView('Logs')
+    expect(wrapper.find('#log-search').element.value).toBe('number 1')
+  })
+
+  it('keeps each tool\'s controls apart: coming back to a tab finds it as it was left', async () => {
+    await open(makeSite(standardFiles()))
+    await select('Y-axis').setValue(COST)
+    await clickTab('VS Code Copilot')
+    expect(select('Y-axis').element.value).toBe('gen_ai.client.token.usage') // its own first measure, not Claude's pick
+    await select('Y-axis').setValue(COUNT)
+    await clickTab('Claude Code')
+    expect(select('Y-axis').element.value).toBe(COST)
+    await clickTab('VS Code Copilot')
+    expect(select('Y-axis').element.value).toBe(COUNT)
+  })
+
+  it('keeps the Logs search of a tab through a visit to another tab', async () => {
+    await open(makeSite(standardFiles()))
+    await clickView('Logs')
+    await wrapper.find('#log-search').setValue('number 2')
+    await clickTab('OpenCode')
+    expect(wrapper.find('#log-search').element.value).toBe('')
+    await clickTab('Claude Code')
+    expect(wrapper.find('#log-search').element.value).toBe('number 2')
+  })
+
+  it('starts clean on a new load of the page, which is a new scope', async () => {
+    const site = makeSite(standardFiles())
+    await open(site)
+    await select('Y-axis').setValue(COST)
+    wrapper.unmount()
+    await open(site)
+    expect(select('Y-axis').element.value).toBe('claude_code.token.usage')
   })
 })

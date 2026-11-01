@@ -873,6 +873,13 @@
   gap: 12px; /* the views are one group; Refresh, an action, stands a little apart */
   margin-right: 8px;
 }
+/* the release, quiet and to the left of the views; it is information, not a control */
+.otel-nav-version {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--vp-c-text-3);
+  white-space: nowrap;
+}
 /* Usage and Logs are a segmented control, like the tool tabs: a faint track, and the view that is showing is raised,
    outlined and blue. */
 .otel-nav-group {
@@ -1136,6 +1143,9 @@
   }
   .otel-nav-btn {
     padding: 0 9px;
+  }
+  .otel-nav-version {
+    display: none; /* the bar is tight here: the version is for wider screens */
   }
   .viz-cal {
     right: auto;

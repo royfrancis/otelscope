@@ -27,21 +27,26 @@ const { isDark } = useData()
 const scope = useScope()
 
 // ---- state ----------------------------------------------------------------------------------
+// What this tab showed when it was last left, if it was (see remember/recall in lib/scope.js): the picks below start from it.
+const saved = scope.recall(props.source, 'usage')
 const status = ref('loading') // loading | ready | empty | error
 const errorMessage = ref('')
 const data = shallowRef(null)
-const measureKey = ref('') // what the user picked in "Y-axis": a measure's key ('' until they pick, then the first measure is shown)
-const pickedField = ref(null) // what the user picked in "Color by": a field's name, '' for "None", or null until they pick
+const measureKey = ref(saved?.measureKey ?? '') // what the user picked in "Y-axis": a measure's key ('' until they pick, then the first measure is shown)
+const pickedField = ref(saved?.pickedField ?? null) // what the user picked in "Color by": a field's name, '' for "None", or null until they pick
 const selectedSession = ref(null) // dictionary index, or null for all sessions
 const range = ref(null) // visible window { startMs, endMs }
 const viewState = shallowRef(null) // { starts, values, stepS, slots: [{ name, color }] }
-const tableOpen = ref(false)
+const tableOpen = ref(saved?.tableOpen ?? false)
 // What the Time range control last chose: { kind: 'preset', key } (relative ones follow "now" when the data is refreshed),
 // { kind: 'custom' } (days picked in the calendar), or null once the user has zoomed or panned by hand.
 const activeRange = ref(null)
 const calendarOpen = ref(false)
 const calendarBounds = shallowRef(null) // { min, max, from, to } the picker opens with
 const calendarButton = ref(null)
+
+// A session is remembered by its id: the index belongs to the file that was read, and a newer read can number them differently.
+const indexOfSession = (json, id) => (id == null ? null : (json.sessions.find((s) => s.id === id)?.idx ?? null))
 
 const rootEl = ref(null)
 const chartEl = ref(null)
@@ -439,15 +444,25 @@ async function initChart() {
 }
 
 async function startChart() {
+  // First, before any await: the session watcher zooms to the session, but it runs during the await below, while there is no chart yet
+  // and zoomToSession does nothing. Set after the chart exists, it would replace the window restored further down.
+  selectedSession.value = indexOfSession(data.value, saved?.sessionId)
   await nextTick() // the card is shown now, so the chart element has a size
   await initChart()
   theme = readTheme()
   axis = computeAxis()
-  const active = { kind: 'preset', key: props.initialRange } // the last 24 hours, until the user chooses or zooms
-  const w = fit(windowOf(active)) // the same path a click on the preset takes: it stretches the axis to now if the data is older
-  range.value = w
-  activeRange.value = active
-  appliedWindow = { ...w }
+  if (saved && !saved.activeRange) {
+    // left zoomed or panned by hand: that exact window, which no preset describes (so none is marked, as before)
+    range.value = fit({ ...saved.range })
+    activeRange.value = null
+    appliedWindow = null
+  } else {
+    const active = saved?.activeRange ?? { kind: 'preset', key: props.initialRange } // the last 24 hours, until the user chooses or zooms
+    const w = fit(windowOf(active)) // the same path a click on the preset takes: it stretches the axis to now if the data is older
+    range.value = w
+    activeRange.value = active
+    appliedWindow = { ...w }
+  }
   fullRender()
   // The first draw may measure legend and axis text in a fallback font: draw once more when the web fonts are in (the zoom window is kept).
   document.fonts?.ready?.then(() => chart && fullRender())
@@ -498,10 +513,21 @@ async function reload() {
     const days = (a) => ({ minMs: a.minMs, maxMs: a.dataMaxMs })
     range.value = followRange(range.value, days(oldAxis), days(axis)) // before the render watcher runs, so it draws the new window
   }
-  selectedSession.value = sessionId == null ? null : (json.sessions.find((s) => s.id === sessionId)?.idx ?? null)
+  selectedSession.value = indexOfSession(json, sessionId)
 }
 
 onBeforeUnmount(() => {
+  // Only a chart that was drawn has something worth coming back to; one that never loaded must not replace what was saved before it.
+  if (chart && range.value) {
+    scope.remember(props.source, 'usage', {
+      measureKey: measureKey.value,
+      pickedField: pickedField.value,
+      sessionId: data.value.sessions[selectedSession.value]?.id ?? null,
+      activeRange: activeRange.value && { ...activeRange.value },
+      range: { ...range.value },
+      tableOpen: tableOpen.value,
+    })
+  }
   unregister()
   cancelAnimationFrame(frame)
   resizeObserver?.disconnect()
@@ -664,9 +690,9 @@ const unit = computed(() => (measure.value.format === 'number' ? String(measure.
       Scroll to zoom, drag to pan, or use the slider under the chart. Bars regroup into finer or coarser time buckets as you zoom.
     </p>
 
-    <details v-if="status === 'ready'" class="viz-details" @toggle="tableOpen = $event.target.open">
+    <details v-if="status === 'ready'" class="viz-details" :open="tableOpen" @toggle="tableOpen = $event.target.open">
       <summary>Table view</summary>
-      <div v-if="tableOpen" class="viz-table-wrap">
+      <div v-if="tableOpen && viewState" class="viz-table-wrap">
         <table class="viz-table">
           <caption class="viz-hint" style="text-align: left; caption-side: top; padding: 8px 12px 0">
             {{ measure.label }} per {{ viewState ? formatStep(viewState.stepS) : '' }}, for the visible time range

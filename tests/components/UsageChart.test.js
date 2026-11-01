@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
 import UsageChart from '../../docs/.vitepress/components/UsageChart.vue'
-import { CODE_LINES, COST_USAGE, TOKEN_USAGE, makeScope, makeServer, makeUsage, mountWithNav, provideScope, rowsOf, sumBy, day } from './fixtures.js'
+import { CODE_LINES, COST_USAGE, TOKEN_USAGE, makeOtherUsage, makeScope, makeServer, makeUsage, mountWithNav, provideScope, rowsOf, sumBy, day } from './fixtures.js'
 import { formatDateTime } from '../../docs/.vitepress/lib/aggregate.js'
 
 // A recording stand-in for the ECharts instance: the tests check what the component asks it to draw.
@@ -1161,5 +1161,162 @@ describe('refresh data', () => {
     expect(wrapper.text()).not.toContain('Could not load')
     expect(seriesTotal(lastFull())).toBe(sumBy(rowsOf(usage, TOKEN_USAGE)))
     expect(note().text()).toBe('Data refreshed.')
+  })
+})
+
+describe('coming back to a tab', () => {
+  const NOW = new Date(2026, 9, 22, 12, 0, 0)
+  // The scope is the page's: a second mount on it finds what the first left, as a switch to Logs and back does.
+  let scope
+  async function openOn(props = WHOLE_DATA, payload = usage) {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => payload })))
+    wrapper = mount(UsageChart, { attachTo: document.body, props, ...provideScope(scope) })
+    for (let i = 0; i < 4; i++) await flushPromises()
+    await wrapper.vm.$nextTick()
+  }
+  const leaveAndReturn = async (props, payload) => {
+    wrapper.unmount()
+    await openOn(props, payload)
+  }
+  const pressed = () => wrapper.findAll('.viz-presets button[aria-pressed="true"]').map((b) => b.attributes('title') ?? b.text())
+  const preset = (label) => wrapper.findAll('.viz-presets button').find((b) => b.text() === label)
+  const zoomByHand = async (startMs, endMs) => {
+    chart.getOption.mockReturnValue({ dataZoom: [{ startValue: startMs, endValue: endMs }] })
+    handlers.dataZoom()
+    await wrapper.vm.$nextTick()
+  }
+  const toggleTable = async (open) => {
+    const details = wrapper.find('details.viz-details')
+    details.element.open = open
+    await details.trigger('toggle')
+  }
+
+  beforeEach(() => {
+    scope = makeScope()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('shows the Y-axis and the Color by that were picked', async () => {
+    await openOn()
+    await select('Y-axis').setValue(COST_USAGE)
+    await select('Color by').setValue('4') // model
+    await leaveAndReturn()
+    expect(select('Y-axis').element.value).toBe(COST_USAGE)
+    expect(select('Color by').element.value).toBe('4')
+    expect(seriesNames(lastFull())).toEqual(['claude-sonnet-5-5', 'claude-opus-5-5'])
+  })
+
+  it('tells "None" from "nothing picked yet" for Color by', async () => {
+    await openOn()
+    await select('Color by').setValue('-1')
+    await leaveAndReturn()
+    expect(seriesNames(lastFull())).toEqual(['Token usage'])
+
+    scope = makeScope() // a tab that was left with nothing picked opens on the data's own default
+    await leaveAndReturn()
+    expect(seriesNames(lastFull())).toEqual(['claude-code', 'claude-code-desktop']) // service.name, as on a first visit
+  })
+
+  it('shows the Time range preset that was picked, worked out again for now', async () => {
+    await openOn()
+    await preset('1week').trigger('click')
+    expect(pressed()).toEqual(['Last week'])
+    vi.setSystemTime(new Date(2026, 9, 22, 18, 0, 0)) // time passes while it is away
+    await leaveAndReturn()
+    expect(pressed()).toEqual(['Last week'])
+    expect(lastFull().dataZoom[0].endValue).toBe(new Date(2026, 9, 22, 18, 0, 0).getTime())
+  })
+
+  it('shows the days picked in the calendar', async () => {
+    await openOn()
+    await wrapper.find('.viz-cal-trigger').trigger('click')
+    await wrapper.find('.viz-cal-day[data-day="2026-10-20"]').trigger('click')
+    await wrapper.find('.viz-cal-day[data-day="2026-10-21"]').trigger('click')
+    await wrapper.find('.viz-cal-apply').trigger('click')
+    await leaveAndReturn()
+    expect(pressed()).toEqual(['Pick a date range'])
+    expect(lastFull().dataZoom[0]).toMatchObject({ startValue: new Date(2026, 9, 20).getTime(), endValue: new Date(2026, 9, 22).getTime() - 1 })
+  })
+
+  it('shows the window that was zoomed or panned to by hand, with no preset marked', async () => {
+    await openOn()
+    const [from, to] = [new Date(2026, 9, 21, 6).getTime(), new Date(2026, 9, 22, 6).getTime()]
+    await zoomByHand(from, to)
+    expect(pressed()).toEqual([])
+    await leaveAndReturn()
+    expect(pressed()).toEqual([])
+    expect(lastFull().dataZoom[0]).toMatchObject({ startValue: from, endValue: to }) // the slider and the wheel both start from it
+    expect(wrapper.find('.viz-range-now').text()).toBe('Showing 21 Oct 2026, 06:00 – 22 Oct 2026, 06:00')
+  })
+
+  it('shows the session that was picked, and keeps the window it was left on instead of zooming to the session again', async () => {
+    await openOn()
+    await wrapper.find('#session-search').setValue('beta')
+    await wrapper.find('.viz-option').trigger('mousedown')
+    const [from, to] = [new Date(2026, 9, 20, 12).getTime(), new Date(2026, 9, 22, 12).getTime()] // zoomed out from the session, by hand
+    await zoomByHand(from, to)
+    wrapper.unmount()
+    chart.dispatchAction.mockClear()
+    await openOn()
+    expect(wrapper.find('.viz-chip').text()).toContain('beta')
+    expect(wrapper.text()).toContain('across 1 session')
+    expect(chart.dispatchAction).not.toHaveBeenCalled() // no zoom to the session on the way in
+    expect(lastFull().dataZoom[0]).toMatchObject({ startValue: from, endValue: to })
+  })
+
+  it('finds the session again by id when the data has been read again in another order', async () => {
+    await openOn()
+    await wrapper.find('#session-search').setValue('beta')
+    await wrapper.find('.viz-option').trigger('mousedown')
+    const [alpha, beta, other] = usage.sessions
+    const shuffled = makeUsage({ sessions: [{ ...other, idx: 0 }, { ...alpha, idx: 1 }, { ...beta, idx: 2 }] })
+    await leaveAndReturn(WHOLE_DATA, shuffled)
+    expect(wrapper.find('.viz-chip').text()).toContain('beta')
+    expect(wrapper.find('.viz-chip').attributes('title')).toBe(beta.id)
+  })
+
+  it('shows the Table view open if it was left open, and closed if it was left closed', async () => {
+    await openOn()
+    await toggleTable(true)
+    expect(wrapper.find('.viz-table').exists()).toBe(true)
+    await leaveAndReturn()
+    expect(wrapper.find('details.viz-details').element.open).toBe(true)
+    expect(wrapper.find('.viz-table').exists()).toBe(true)
+
+    await toggleTable(false)
+    await leaveAndReturn()
+    expect(wrapper.find('details.viz-details').element.open).toBe(false)
+    expect(wrapper.find('.viz-table').exists()).toBe(false)
+  })
+
+  it('is per tool: another tool\'s tab starts from its own defaults, and this one is still remembered', async () => {
+    await openOn()
+    await select('Y-axis').setValue(COST_USAGE)
+    await leaveAndReturn({ ...WHOLE_DATA, source: 'vscode', label: 'VS Code Copilot' }, makeOtherUsage())
+    expect(select('Y-axis').element.value).toBe('gen_ai.client.token.usage')
+    await leaveAndReturn()
+    expect(select('Y-axis').element.value).toBe(COST_USAGE)
+  })
+
+  it('ignores a pick the data no longer has', async () => {
+    await openOn()
+    await select('Y-axis').setValue(COST_USAGE)
+    const withoutCost = makeUsage({ measures: usage.measures.filter((m) => m.key !== COST_USAGE) })
+    await leaveAndReturn(WHOLE_DATA, withoutCost)
+    expect(select('Y-axis').element.value).toBe(TOKEN_USAGE) // the first measure there is
+  })
+
+  it('does not lose what was saved when a later visit never got as far as drawing', async () => {
+    await openOn()
+    await select('Y-axis').setValue(COST_USAGE)
+    wrapper.unmount()
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, statusText: 'S404', json: async () => { throw new Error('no body') } })))
+    wrapper = mount(UsageChart, { attachTo: document.body, props: WHOLE_DATA, ...provideScope(scope) })
+    for (let i = 0; i < 4; i++) await flushPromises()
+    expect(wrapper.text()).toContain('Could not load')
+    await leaveAndReturn()
+    expect(select('Y-axis').element.value).toBe(COST_USAGE)
   })
 })
