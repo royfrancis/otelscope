@@ -9,6 +9,11 @@ ports as OTEL_LOGGER_LISTEN lists, and the PORT decides which tool a request bel
     <log dir>/vscode/...                              POST /v1/<signal> on VS Code's port
     <log dir>/other/...      a request on the "claude" port that does not come from Claude Code
 
+A request is OTLP/HTTP: protobuf (application/x-protobuf) or JSON (application/json), uncompressed or compressed with
+gzip or deflate. The Content-Type says which; when it says neither (none, or a wrong one) the body does: JSON starts
+with {, a protobuf request with field 1. The reply is in the format of the request; an error (a google.rpc.Status) is
+protobuf if the Content-Type says so, JSON otherwise.
+
 Each entry is NAME:PORT[:PROTOCOL[:DIR]]:
     NAME      the tool, and by default the folder under the log dir (letters, digits, - and _; "other" is reserved)
     PORT      the port to listen on
@@ -77,7 +82,9 @@ PROTOCOLS = {"any": "any", "protobuf": "protobuf", "http/protobuf": "protobuf", 
 DEFAULT_CLAUDE_SERVICES = "claude-code,claude-code-desktop"
 UNMATCHED = "other"  # where a request to the Claude Code path goes when it does not come from Claude Code
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", "host.docker.internal"}  # names that lead back to this logger's ports
-PROTOBUF_TYPES = ("application/x-protobuf", "application/protobuf")
+PROTOBUF_TYPES = ("application/x-protobuf", "application/protobuf", "application/vnd.google.protobuf")
+JSON_TYPES = ("application/json", "text/json")  # and anything ending in +json
+ENCODINGS = {"gzip": 16 + zlib.MAX_WBITS, "x-gzip": 16 + zlib.MAX_WBITS, "deflate": zlib.MAX_WBITS}  # Content-Encoding -> zlib window
 ID_KEYS = ("traceId", "spanId", "parentSpanId")
 INT_KEYS = ("intValue", "asInt")
 RESOURCES = {"metrics": "resource_metrics", "logs": "resource_logs", "traces": "resource_spans"}
@@ -91,9 +98,10 @@ MESSAGES = {
     400: "the body is not valid OTLP",
     404: "not found",
     413: "the request is too large",
-    415: "send OTLP as application/x-protobuf or application/json (no other encodings)",
+    415: "send OTLP as application/x-protobuf or application/json, uncompressed or with gzip or deflate",
     500: "internal error",
 }
+RPC_CODES = {400: 3, 404: 5, 413: 8, 415: 3, 500: 13}  # an HTTP error's google.rpc.Code: INVALID_ARGUMENT, NOT_FOUND, RESOURCE_EXHAUSTED, INTERNAL
 
 
 class HttpError(Exception):
@@ -477,8 +485,40 @@ class Response:
         self.status, self.body, self.content_type = status, body, content_type
 
 
-def error_response(status):
-    return Response(status, json.dumps({"error": MESSAGES.get(status, "error")}).encode())
+def media_type(headers):
+    return headers.get("content-type", "").split(";")[0].strip().lower()
+
+
+def body_format(headers, body):
+    """"protobuf" or "json". The Content-Type says; when it says neither (none, or a wrong one: curl sends a form type)
+    the body does: JSON starts with {, and a protobuf request with field 1 (a resource list). None if it cannot be told."""
+    media = media_type(headers)
+    if media in PROTOBUF_TYPES:
+        return "protobuf"
+    if media in JSON_TYPES or media.endswith("+json"):
+        return "json"
+    if body[:1024].lstrip()[:1] == b"{":
+        return "json"
+    return "protobuf" if body[:1] == b"\x0a" else None
+
+
+def varint(number):
+    out = bytearray()
+    while number > 0x7F:
+        out.append(number & 0x7F | 0x80)
+        number >>= 7
+    out.append(number)
+    return bytes(out)
+
+
+def error_response(status, headers=None):
+    """A google.rpc.Status {code, message}, as OTLP/HTTP asks, in the format the request had: protobuf if its Content-Type
+    said so, JSON otherwise."""
+    code, message = RPC_CODES.get(status, 2), MESSAGES.get(status, "error")
+    if media_type({} if headers is None else headers) in PROTOBUF_TYPES:
+        text = message.encode()
+        return Response(status, b"\x08" + varint(code) + b"\x12" + varint(len(text)) + text, "application/x-protobuf")
+    return Response(status, json.dumps({"code": code, "message": message}).encode())
 
 
 class Listener(NamedTuple):
@@ -490,7 +530,7 @@ class Listener(NamedTuple):
 
 def parse_listeners(text, log_dir):
     """OTEL_LOGGER_LISTEN: NAME:PORT[:PROTOCOL[:DIR]], separated by commas or new lines. Raises ValueError."""
-    listeners, ports = [], set()
+    listeners, ports, names, folders = [], set(), set(), set()
     for entry in (e.strip() for e in re.split(r"[,\n]", text or "")):
         if not entry:
             continue
@@ -499,6 +539,8 @@ def parse_listeners(text, log_dir):
             raise ValueError(f"'{entry}' is not NAME:PORT[:PROTOCOL[:DIR]]")
         if not re.fullmatch(r"[a-z0-9_-]+", name) or name == UNMATCHED:
             raise ValueError(f"'{name}' is not a usable name (letters, digits, - and _; '{UNMATCHED}' is reserved)")
+        if name in names:  # a pasted entry whose name was not changed would put its data in the other tool's files
+            raise ValueError(f"the name '{name}' is listed twice")
         if not port_text.isdigit() or not 0 < int(port_text) < 65536:
             raise ValueError(f"'{port_text}' is not a port (1-65535) in '{name}'")
         if protocol.lower() not in PROTOCOLS and protocol:
@@ -508,9 +550,13 @@ def parse_listeners(text, log_dir):
         port = int(port_text)
         if port in ports:
             raise ValueError(f"port {port} is listed twice")
+        folder = Path(log_dir) / (Path(directory) if directory else Path(name))
+        if folder in folders:
+            raise ValueError(f"the folder {folder} is used by two listeners ('{name}' and another)")
         ports.add(port)
-        where = Path(directory) if directory else Path(name)
-        listeners.append(Listener(name, port, PROTOCOLS.get(protocol.lower(), "any"), Path(log_dir) / where))
+        names.add(name)
+        folders.add(folder)
+        listeners.append(Listener(name, port, PROTOCOLS.get(protocol.lower(), "any"), folder))
     if not listeners:
         raise ValueError("no listeners")
     return listeners
@@ -540,13 +586,13 @@ class Logger:
         return parts[-1], self.directory / f"{parts[-1]}{EXT}"
 
     def unpack(self, headers, body):
-        """Undo gzip, refusing anything that would exceed the size limit once unpacked."""
+        """Undo gzip or deflate, refusing anything that would exceed the size limit once unpacked."""
         encoding = headers.get("content-encoding", "").strip().lower()
         if encoding in ("", "identity"):
             return body
-        if encoding != "gzip":
+        if encoding not in ENCODINGS:
             raise HttpError(415)
-        unpacker = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        unpacker = zlib.decompressobj(ENCODINGS[encoding])
         try:
             out = unpacker.decompress(body, self.max_body + 1)
         except zlib.error as err:
@@ -557,17 +603,17 @@ class Logger:
 
     def handle_post(self, path, headers, body):
         """Everything except the sockets: returns a Response. Kept separate so it can be tested directly."""
+        headers = {k.lower(): v for k, v in headers.items()}
         target = self.route(path)
         if target is None:
-            return error_response(404)
+            return error_response(404, headers)
         signal, file = target
-        headers = {k.lower(): v for k, v in headers.items()}
         try:
             body = self.unpack(headers, body)
-            is_protobuf = headers.get("content-type", "").split(";")[0].strip().lower() in PROTOBUF_TYPES
-            if self.protocol != "any" and is_protobuf != (self.protocol == "protobuf"):
-                raise HttpError(415)  # this port takes the other format only
-            if is_protobuf:
+            wire = body_format(headers, body)
+            if wire is None or self.protocol not in ("any", wire):
+                raise HttpError(415)  # neither format, or the other one than this port takes
+            if wire == "protobuf":
                 payload = body  # kept exactly as the tool sent it
                 message = parse_message(signal, payload)
                 reply = Response(200, b"", "application/x-protobuf")  # an empty Export*Response
@@ -580,9 +626,9 @@ class Logger:
                 payload = message.SerializeToString()  # converted once, here
                 reply = Response(200)
         except HttpError as err:
-            return error_response(err.status)
+            return error_response(err.status, headers)
         except ValueError:
-            return error_response(400)
+            return error_response(400, headers)
 
         if self.source == "claude":
             if not self.is_claude(signal, message):
@@ -626,10 +672,10 @@ class Handler(BaseHTTPRequestHandler):
             body = self._read_body(self.logger.max_body)
             response = self.logger.handle_post(self.path, self.headers, body)
         except HttpError as err:
-            response = error_response(err.status)
+            response = error_response(err.status, self.headers)
         except Exception as err:  # never echo the request: say what kind of failure it was
             print(f"error: {type(err).__name__} while handling {self.path.split('?')[0]}", file=sys.stderr, flush=True)
-            response = error_response(500)
+            response = error_response(500, self.headers)
         self._reply(response)
 
     def do_GET(self):

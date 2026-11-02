@@ -21,6 +21,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 from unittest import mock
 from datetime import datetime
 from pathlib import Path
@@ -223,7 +224,9 @@ class ListenerSettingTests(unittest.TestCase):
     def test_mistakes_are_refused_with_a_reason(self):
         for text, why in (("", "no listeners"), ("claude", "NAME:PORT"), ("claude:x", "not a port"), ("claude:0", "not a port"),
                           ("claude:70000", "not a port"), ("Bad Name:1", "usable name"), ("../x:1", "usable name"),
-                          ("other:1", "reserved"), ("a:1:grpc", "protocol"), ("a:1,b:1", "twice"),
+                          ("other:1", "reserved"), ("a:1:grpc", "protocol"), ("a:1,b:1", "port 1 is listed twice"),
+                          ("a:1,a:2", "name 'a' is listed twice"),  # a pasted entry whose name was not changed
+                          ("a:1,b:2::x,c:3::x", "used by two listeners"), ("a:1,b:2::a", "used by two listeners"),
                           ("a:1:any:, b:2:any: c:3:any:", "comma missing")):
             with self.assertRaisesRegex(ValueError, why, msg=text):
                 self.parse(text)
@@ -383,8 +386,9 @@ class JsonRequestTests(LoggerCase):
         self.post_json("/v1/logs", LOGS)
         self.assertIn("héllo ✓", json.dumps(datas(self.file("claude", "logs")), ensure_ascii=False))
 
-    def test_non_json_without_a_protobuf_content_type_is_415_and_not_logged(self):
-        self.assertEqual(self.log.handle_post("/v1/logs", {}, b"\x0a\x00 not json").status, 415)
+    def test_a_body_that_is_neither_format_is_415_and_not_logged(self):
+        for headers, body in (({}, b"not json"), ({}, b""), (JSON, b"not json"), ({"Content-Type": "text/plain"}, b"\xff\x00 not either")):
+            self.assertEqual(self.log.handle_post("/v1/logs", headers, body).status, 415, repr(body))
         self.assertEqual(list(self.dir.iterdir()), [])
 
     def test_json_that_is_not_otlp_is_400_and_not_logged(self):
@@ -400,9 +404,72 @@ class JsonRequestTests(LoggerCase):
     def test_unsupported_or_broken_or_oversized_encodings(self):
         small = L.Logger(self.dir, max_body=1024)
         self.assertEqual(small.handle_post("/v1/logs", {**JSON, "Content-Encoding": "br"}, b"{}").status, 415)
-        self.assertEqual(small.handle_post("/v1/logs", {**JSON, "Content-Encoding": "gzip"}, b"not gzip").status, 400)
-        bomb = gzip.compress(b"0" * 1_000_000)  # tiny on the wire, huge once unpacked
-        self.assertEqual(small.handle_post("/v1/logs", {**JSON, "Content-Encoding": "gzip"}, bomb).status, 413)
+        for encoding, pack in (("gzip", gzip.compress), ("deflate", zlib.compress)):
+            headers = {**JSON, "Content-Encoding": encoding}
+            self.assertEqual(small.handle_post("/v1/logs", headers, b"not packed").status, 400, encoding)
+            bomb = pack(b"0" * 1_000_000)  # tiny on the wire, huge once unpacked
+            self.assertEqual(small.handle_post("/v1/logs", headers, bomb).status, 413, encoding)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+
+class WireFormatTests(LoggerCase):
+    """OTLP/HTTP as the specification allows it: either format, packed or not, answered in the format it came in."""
+
+    def test_every_encoding_in_both_formats(self):
+        json_body, proto_body = json.dumps(LOGS).encode(), L.json_to_proto("logs", LOGS)
+        for encoding, pack in (("gzip", gzip.compress), ("x-gzip", gzip.compress), ("deflate", zlib.compress),
+                               ("identity", lambda body: body), ("GZIP", gzip.compress)):
+            for headers, body in ((JSON, json_body), (PROTO, proto_body)):
+                reply = self.log.handle_post("/v1/logs", {**headers, "Content-Encoding": encoding}, pack(body))
+                self.assertEqual(reply.status, 200, (encoding, headers))
+        self.assertEqual(len(payloads(self.file("claude", "logs"))), 10)
+        self.assertEqual(set(payloads(self.file("claude", "logs"))), {L.json_to_proto("logs", LOGS)})  # packed or not, stored the same
+
+    def test_the_body_decides_when_the_content_type_says_neither(self):
+        json_body, proto_body = json.dumps(LOGS).encode(), L.json_to_proto("logs", LOGS)
+        for headers in ({}, {"Content-Type": "application/x-www-form-urlencoded"}, {"Content-Type": "application/octet-stream"}):
+            self.assertEqual(self.log.handle_post("/v1/logs", headers, json_body).status, 200, headers)
+            self.assertEqual(self.log.handle_post("/v1/logs", headers, b"\n " + json_body).status, 200, headers)
+            self.assertEqual(self.log.handle_post("/v1/logs", headers, proto_body).status, 200, headers)
+        self.assertEqual(set(payloads(self.file("claude", "logs"))), {proto_body})  # always stored as protobuf
+
+    def test_other_names_of_the_two_formats(self):
+        for content_type, body in (("application/vnd.google.protobuf", L.json_to_proto("logs", LOGS)), ("application/protobuf", L.json_to_proto("logs", LOGS)),
+                                   ("application/vnd.otel+json", json.dumps(LOGS).encode()), ("Application/JSON; charset=utf-8", json.dumps(LOGS).encode())):
+            self.assertEqual(self.log.handle_post("/v1/logs", {"Content-Type": content_type}, body).status, 200, content_type)
+
+    def test_a_port_takes_the_format_the_body_has_whatever_the_content_type(self):
+        proto_only = self.tool("p", protocol="protobuf")
+        self.assertEqual(proto_only.handle_post("/v1/logs", {}, json.dumps(LOGS).encode()).status, 415)
+        self.assertEqual(proto_only.handle_post("/v1/logs", {}, L.json_to_proto("logs", LOGS)).status, 200)
+        json_only = self.tool("j", protocol="json")
+        self.assertEqual(json_only.handle_post("/v1/logs", {}, L.json_to_proto("logs", LOGS)).status, 415)
+        self.assertEqual(json_only.handle_post("/v1/logs", {}, json.dumps(LOGS).encode()).status, 200)
+
+    def test_a_protobuf_body_that_is_not_otlp_is_400_and_not_logged(self):
+        self.assertEqual(self.log.handle_post("/v1/logs", {}, b"\x0a\xff\xff\xff\xff\x0f").status, 400)  # field 1 longer than the body
+        self.assertEqual(self.log.handle_post("/v1/logs", PROTO, b"\x0a\xff\xff\xff\xff\x0f").status, 400)
+        self.assertEqual(list(self.dir.iterdir()), [])
+
+    def test_success_replies_are_in_the_format_of_the_request(self):
+        proto = self.log.handle_post("/v1/logs", PROTO, L.json_to_proto("logs", LOGS))
+        self.assertEqual((proto.status, proto.body, proto.content_type), (200, b"", "application/x-protobuf"))
+        reply = self.log.handle_post("/v1/logs", JSON, json.dumps(LOGS).encode())
+        self.assertEqual((reply.status, reply.body, reply.content_type), (200, b"{}", "application/json"))
+
+    def test_error_replies_are_a_status_in_the_format_of_the_request(self):
+        for headers, path, body, status, code in ((PROTO, "/v1/logs", b"\x0a\xff\xff\xff\xff\x0f", 400, 3), (PROTO, "/nope", b"", 404, 5),
+                                                  (PROTO, "/v1/logs", b"", 415, 3)):
+            if status == 415:
+                headers = {**headers, "Content-Encoding": "br"}
+            reply = self.log.handle_post(path, headers, body)
+            message = L.MESSAGES[status].encode()
+            self.assertEqual((reply.status, reply.content_type), (status, "application/x-protobuf"))
+            self.assertEqual(reply.body, bytes([0x08, code, 0x12, len(message)]) + message)  # google.rpc.Status: code (1), message (2)
+        for headers, path, body, status, code in ((JSON, "/v1/logs", b"[]", 400, 3), (JSON, "/nope", b"{}", 404, 5), ({}, "/v1/logs", b"nope", 415, 3)):
+            reply = self.log.handle_post(path, headers, body)
+            self.assertEqual((reply.status, reply.content_type), (status, "application/json"))
+            self.assertEqual(json.loads(reply.body), {"code": code, "message": L.MESSAGES[status]})
         self.assertEqual(list(self.dir.iterdir()), [])
 
 

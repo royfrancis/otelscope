@@ -481,14 +481,15 @@ test('a missing python is reported as such', async () => {
 })
 
 // ---- one tab per folder of the log root ------------------------------------------------------------
-test('listSources gives known folders their tab order and labels, then the rest by name, and skips what is not a folder', () => {
+test('listSources gives known folders their tab order and labels, then the rest by name, then other, and skips what is not a folder', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'otel-root-'))
   try {
-    for (const name of ['zeta', 'other', 'codex', 'vscode', 'claude', 'alpha', '.hidden', 'has space']) mkdirSync(path.join(root, name))
+    for (const name of ['zeta', 'other', 'codex', 'vscode', 'claude', 'positron', 'alpha', '.hidden', 'has space']) mkdirSync(path.join(root, name))
     writeFileSync(path.join(root, 'stray-file'), 'x')
     assert.deepEqual(listSources(root), [
       { id: 'claude', label: 'Claude Code' }, { id: 'vscode', label: 'VS Code Copilot' }, { id: 'codex', label: 'Codex' },
-      { id: 'other', label: 'Other' }, { id: 'alpha', label: 'Alpha' }, { id: 'zeta', label: 'Zeta' },
+      { id: 'alpha', label: 'Alpha' }, { id: 'positron', label: 'Positron' }, { id: 'zeta', label: 'Zeta' }, // a tool nobody listed needs no edit here
+      { id: 'other', label: 'Other' }, // always the last tab
     ])
   } finally {
     rmSync(root, { recursive: true, force: true })

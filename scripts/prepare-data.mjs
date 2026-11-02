@@ -71,16 +71,18 @@ const LABELS = {
   opencode: 'OpenCode',
   other: 'Other',
 }
-const TAB_ORDER = Object.keys(LABELS)
+const OTHER = 'other' // where the logger puts what no tool owns
+const TAB_ORDER = Object.keys(LABELS).filter((id) => id !== OTHER)
 
-/** The folders of the log root that get a tab: the usual ones first, in order, then any other, by name. */
+/** The folders of the log root that get a tab: the usual ones first, in order, then any other, by name, and `other` last. */
 export function listSources(root) {
   const found = readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory() && /^[A-Za-z0-9_-]+$/.test(e.name)) // the name becomes part of a URL
     .map((e) => e.name)
   const known = TAB_ORDER.filter((id) => found.includes(id))
-  const others = found.filter((name) => !TAB_ORDER.includes(name)).sort()
-  return [...known, ...others].map((id) => ({ id, label: LABELS[id] ?? id[0].toUpperCase() + id.slice(1) }))
+  const others = found.filter((name) => name !== OTHER && !TAB_ORDER.includes(name)).sort()
+  const last = found.includes(OTHER) ? [OTHER] : []
+  return [...known, ...others, ...last].map((id) => ({ id, label: LABELS[id] ?? id[0].toUpperCase() + id.slice(1) }))
 }
 
 /** Everything the site shows: one entry per folder. A folder that cannot be read is reported on its own tab. */

@@ -4,12 +4,13 @@
 
 ![otelscope logs preview](preview-2.webp)
 
-Records the OpenTelemetry (OTEL) output of AI coding tools such as Claude Code, VS Code Copilot Chat and OpenCode on your own machine, and lets you explore it in a small website. It is two Docker containers that can run together or on their own: a **logger** that appends everything it receives to protobuf log files in `~/otelscope`, one folder per tool, and a **site** that only reads those files and has a tab for each tool.
+Records the OpenTelemetry (OTEL) output of AI coding tools such as Claude Code, VS Code Copilot Chat, OpenCode and Positron on your own machine, and lets you explore it in a small website. It is two Docker containers that can run together or on their own: a **logger** that appends everything it receives to protobuf log files in `~/otelscope`, one folder per tool, and a **site** that only reads those files and has a tab for each tool.
 
 ```
 Claude Code ──▶─┐   OTLP/HTTP, protobuf
 VS Code     ──▶─┼──▶ logger container ──▶ ~/otelscope/<tool>/{metrics,logs,traces}.pblog
-OpenCode    ──▶─┘
+OpenCode    ──▶─┤
+Positron    ──▶─┘
 
 ~/otelscope ──▶ site (a second container, read-only) ──▶ 127.0.0.1:5174
 ```
@@ -30,7 +31,7 @@ Needs Docker with Compose.
    docker compose up -d --build
    ```
 
-   The logger listens on `127.0.0.1` port 4318 for Claude Code, 4316 for VS Code and 4317 for OpenCode (`curl http://127.0.0.1:4318/healthz` answers `ok`). The site is at <http://127.0.0.1:5174/>.
+   The logger listens on `127.0.0.1`, one port per tool: the endpoints under [Tool settings](#tool-settings) (`curl http://127.0.0.1:4318/healthz` answers `ok`). The site is at <http://127.0.0.1:5174/>.
 
 3. Point your tool at its port: see [Tool settings](#tool-settings).
 
@@ -51,7 +52,7 @@ docker compose -f docker-compose.site.yml up -d --build     # build and run only
 
 ## Tool settings
 
-Each tool sends OTLP over HTTP to its own port on the logger, and the port decides which tool the data belongs to. Anything in front of `/v1/<signal>` in the path is ignored. Set every tool to **protobuf**: JSON is accepted too, but is converted to protobuf on arrival.
+Each tool sends OTLP over HTTP to its own port on the logger, and the port decides which tool the data belongs to. Anything in front of `/v1/<signal>` in the path is ignored. Set every tool to **protobuf**: JSON is accepted too, but is converted to protobuf on arrival. Either can be sent uncompressed, or with gzip or deflate. The `Content-Type` says which format it is; if it says neither (or something wrong, such as curl's default) the body is looked at instead. The reply is in the format of the request; an error reply (a `google.rpc.Status`) is protobuf if the `Content-Type` says protobuf, and JSON otherwise. gRPC is not supported.
 
 ### Claude Code
 
@@ -111,6 +112,21 @@ OpenCode has no built-in exporter; the community plugin [`@devtheops/opencode-pl
 }
 ```
 
+### Positron
+
+Positron has no OTEL documentation; its settings are defined in the [source](https://github.com/posit-dev/positron/blob/main/extensions/copilot/src/platform/otel/common/otelConfig.ts) and are those of VS Code Copilot Chat, except `captureIdentity`, which Positron does not have. Update user settings in `settings.json` (`~/Library/Application\ Support/Positron/User/settings.json`) and restart Positron:
+
+```json
+"github.copilot.chat.otel.enabled": true,
+"github.copilot.chat.otel.exporterType": "otlp-http",
+"github.copilot.chat.otel.protocol": "http/protobuf",
+"github.copilot.chat.otel.otlpEndpoint": "http://127.0.0.1:4320",
+"github.copilot.chat.otel.captureContent": true,
+"github.copilot.chat.otel.serviceName": "positron-copilot-chat"
+```
+
+The `COPILOT_OTEL_*`, `OTEL_EXPORTER_OTLP_*` and `OTEL_SERVICE_NAME` environment variables override these settings when they are set in the shell that starts Positron.
+
 ## The website
 
 **otelscope** is a [VitePress](https://vitepress.dev) site at <http://127.0.0.1:5174/> with a tab for each log folder. Every tool gets the same two views, populated from its data without tool-specific configuration:
@@ -126,16 +142,18 @@ Ports, protocols and folders are set in `docker-compose.yml`. Override them with
 
 | Variable | Default | |
 |---|---|---|
-| `CLAUDE_PORT`, `VSCODE_PORT`, `OPENCODE_PORT` | `4318`, `4316`, `4317` | Each tool's port, the same on your system and in the container, so a tool's setting is what the logger listens on. |
-| `CLAUDE_PROTOCOL`, `VSCODE_PROTOCOL`, `OPENCODE_PROTOCOL` | `any` | What the port accepts: `any`, `protobuf` or `json` (`http/…` forms work too). The other format gets a `415` and is not logged, so a tool set to the wrong format shows up as an error. gRPC is not supported. |
-| `CLAUDE_DIR`, `VSCODE_DIR`, `OPENCODE_DIR` | empty: `<logs>/<tool>` | A folder of its own, as a path **inside the container** (a relative one is under `/data/logs`). If it is outside `/data/logs`, mount it too (add a `volumes` entry) or the logger refuses to start. The site only reads folders under the log folder. |
+| `<TOOL>_PORT` (`CLAUDE_PORT`, `VSCODE_PORT`, …) | in `docker-compose.yml` | Each tool's port, the same on your system and in the container, so a tool's setting is what the logger listens on. |
+| `<TOOL>_PROTOCOL` | `any` | What the port accepts: `any`, `protobuf` or `json` (`http/…` forms work too). The other format gets a `415` and is not logged, so a tool set to the wrong format shows up as an error. gRPC is not supported. |
+| `<TOOL>_DIR` | empty: `<logs>/<tool>` | A folder of its own, as a path **inside the container** (a relative one is under `/data/logs`). If it is outside `/data/logs`, mount it too (add a `volumes` entry) or the logger refuses to start. The site only reads folders under the log folder. |
 | `SITE_PORT` | `5174` | The site's port. |
 | `OTEL_LOGS_DIR` | `~/otelscope` | The log folder on your system (must already exist). |
 | `OTEL_LOGGER_FORWARD_URL`, `OTEL_LOGGER_FORWARD_HEADERS` | `http://host.docker.internal:5080`, empty | The copy sent on to another receiver: see [Forwarding](#forwarding-to-another-receiver). |
 
 `docker compose exec logger entrypoint.sh listeners` shows what the logger is using. The raw `OTEL_LOGGER_LISTEN` syntax, `NAME:PORT[:PROTOCOL[:DIR]]`, and all the logger's own settings are described at the top of `otel-logger.py`.
 
-**Adding a tool** (say `mytool` on 4320): in the `logger` service of `docker-compose.yml`, add a `ports` entry, `"127.0.0.1:${MYTOOL_PORT:-4320}:${MYTOOL_PORT:-4320}"`, and an `OTEL_LOGGER_LISTEN` entry, `mytool:${MYTOOL_PORT:-4320}:${MYTOOL_PROTOCOL:-any}:${MYTOOL_DIR:-}` (with a comma after the entry before it). Both are needed because Docker only publishes the ports a compose file lists. Then point the tool at it, as in [Tool settings](#tool-settings). Its folder, `~/otelscope/mytool/`, appears with the first request, and its tab on the site after **Refresh**. A name is letters, digits, `-` and `_` (`other` is reserved). A missing comma or a repeated port stops the logger with a message.
+**Adding a tool** (say `mytool` on 4321): in the `logger` service of `docker-compose.yml`, add a `ports` entry, `"127.0.0.1:${MYTOOL_PORT:-4321}:${MYTOOL_PORT:-4321}"`, and an `OTEL_LOGGER_LISTEN` entry, `mytool:${MYTOOL_PORT:-4321}:${MYTOOL_PROTOCOL:-any}:${MYTOOL_DIR:-}` (with a comma after the entry before it). Both are needed because Docker only publishes the ports a compose file lists. Then point the tool at it, as in [Tool settings](#tool-settings), and add a section for it there. Its folder, `~/otelscope/mytool/`, appears with the first request, and its tab on the site after **Refresh**, called after its folder (`Mytool`). A name is letters, digits, `-` and `_` (`other` is reserved). A missing comma, or a repeated name, port or folder, stops the logger with a message. The [smoke test](#smoke-test) needs a port of its own for the new tool too (`MYTOOL_PORT=14321`).
+
+**Removing a tool**: delete its two lines from `docker-compose.yml` and its section under Tool settings. The logs in `~/otelscope/<tool>/` are never deleted, so its tab stays on the site until you move that folder away yourself.
 
 ## Forwarding to another receiver
 
@@ -177,7 +195,7 @@ Without Docker: `python3 otel-logger.py cat FILE | jq …` (after `pip install -
 
 ```bash
 mkdir -p ~/otelscope-scratch && touch ~/otelscope-scratch/.otelscope-scratch
-OTEL_LOGS_DIR="$HOME/otelscope-scratch" OTEL_LOGGER_FORWARD_URL= CLAUDE_PORT=14318 VSCODE_PORT=14316 OPENCODE_PORT=14317 \
+OTEL_LOGS_DIR="$HOME/otelscope-scratch" OTEL_LOGGER_FORWARD_URL= CLAUDE_PORT=14318 VSCODE_PORT=14316 OPENCODE_PORT=14317 POSITRON_PORT=14320 \
   docker compose -p otelscope-test up -d --build logger
 scripts/smoke-test.sh otelscope-test-logger-1
 docker compose -p otelscope-test down
